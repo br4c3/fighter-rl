@@ -7,7 +7,7 @@ Python 코드는 `fighter_rl/` 패키지 아래에 역할별로 정리되어 있
 
 ```text
 configs/*.json
-  -> run_fast_aip_*_server.sh
+  -> run_fast_aip_*_server.py
   -> fighter_rl.training.ppo 또는 fighter_rl.training.sac
   -> fighter_rl.training.stages
   -> fighter_rl.envs.loiter
@@ -32,8 +32,9 @@ configs/*.json
 
 | 경로 | 역할 |
 | --- | --- |
-| `run_fast_aip_ppo_server.sh` | CUDA 확인 후 `fighter_rl.training.ppo`를 실행한다. |
-| `run_fast_aip_sac_server.sh` | CUDA 확인 후 `fighter_rl.training.sac`를 실행한다. |
+| `run_fast_aip_ppo_server.py` | config/device 확인 후 `fighter_rl.training.ppo`를 실행한다. |
+| `run_fast_aip_sac_server.py` | config/device 확인 후 `fighter_rl.training.sac`를 실행한다. |
+| `fighter_rl/training/launcher.py` | Python launcher 공통 로직. config 경로, device, CUDA 확인을 담당한다. |
 | `configs/ppo_lstm.json` | PPO LSTM 기본 설정. |
 | `configs/sac_lstm.json` | SAC LSTM 기본 설정. |
 | `fighter_rl/utils/config.py` | JSON config를 읽어 학습 설정 객체를 만든다. |

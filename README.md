@@ -8,8 +8,8 @@ Minimal fast GPU training setup for the AIP dogfight policy.
 
 - `fighter_rl/training/ppo.py` - PPO trainer.
 - `fighter_rl/training/sac.py` - SAC trainer.
-- `run_fast_aip_ppo_server.sh` - PPO launch wrapper.
-- `run_fast_aip_sac_server.sh` - SAC launch wrapper.
+- `run_fast_aip_ppo_server.py` - PPO launch wrapper.
+- `run_fast_aip_sac_server.py` - SAC launch wrapper.
 - `configs/ppo_lstm.json` - PPO training config.
 - `configs/sac_lstm.json` - SAC training config.
 - `fighter_rl/models/ppo.py` - PPO MLP/LSTM policy profiles.
@@ -30,7 +30,7 @@ pip install -r requirements.txt
 ## PPO LSTM
 
 ```bash
-bash run_fast_aip_ppo_server.sh
+python run_fast_aip_ppo_server.py
 ```
 
 Edit `configs/ppo_lstm.json` to change PPO settings.
@@ -38,7 +38,7 @@ Edit `configs/ppo_lstm.json` to change PPO settings.
 ## SAC LSTM
 
 ```bash
-bash run_fast_aip_sac_server.sh
+python run_fast_aip_sac_server.py
 ```
 
 Edit `configs/sac_lstm.json` to change SAC settings.
@@ -47,14 +47,14 @@ If two GPUs are available, run PPO with `CUDA_VISIBLE_DEVICES=0` and SAC with
 `CUDA_VISIBLE_DEVICES=1`.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash run_fast_aip_ppo_server.sh
-CUDA_VISIBLE_DEVICES=1 bash run_fast_aip_sac_server.sh
+CUDA_VISIBLE_DEVICES=0 python run_fast_aip_ppo_server.py
+CUDA_VISIBLE_DEVICES=1 python run_fast_aip_sac_server.py
 ```
 
 To use another config file:
 
 ```bash
-CONFIG=configs/ppo_lstm.json bash run_fast_aip_ppo_server.sh
+CONFIG=configs/ppo_lstm.json python run_fast_aip_ppo_server.py
 ```
 
 ## Variants
