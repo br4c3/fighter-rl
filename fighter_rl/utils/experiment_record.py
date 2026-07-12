@@ -1,5 +1,4 @@
 """Reproducibility helpers for fast AIP/NeuralPlane experiments."""
-from __future__ import annotations
 
 import hashlib
 import json
@@ -8,13 +7,11 @@ import platform
 import sys
 import time
 from pathlib import Path
-from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
-ROOT = Path(__file__).resolve().parent
-
-
-def _jsonable(value: Any) -> Any:
+def _jsonable(value):
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, dict):
@@ -33,7 +30,7 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def sha256_file(path: Path | str | None) -> str | None:
+def sha256_file(path):
     if not path:
         return None
     p = Path(path)
@@ -46,18 +43,18 @@ def sha256_file(path: Path | str | None) -> str | None:
     return h.hexdigest()
 
 
-def file_record(path: Path | str | None) -> dict[str, Any]:
+def file_record(path):
     if not path:
         return {"path": ""}
     p = Path(path)
-    out: dict[str, Any] = {"path": str(p), "exists": p.exists()}
+    out = {"path": str(p), "exists": p.exists()}
     if p.is_file():
         out["size_bytes"] = p.stat().st_size
         out["sha256"] = sha256_file(p)
     return out
 
 
-def stage_record(stage) -> dict[str, Any]:
+def stage_record(stage):
     return {
         "index": int(stage.index),
         "name": stage.name,
@@ -74,7 +71,7 @@ def stage_record(stage) -> dict[str, Any]:
     }
 
 
-def selected_environment() -> dict[str, str]:
+def selected_environment():
     keys = (
         "CUDA_VISIBLE_DEVICES",
         "PYTHONHASHSEED",
@@ -87,19 +84,16 @@ def selected_environment() -> dict[str, str]:
         "NUM_ENVS",
         "ADVANCE_WINDOW",
         "ADVANCE_PATIENCE",
-        "RESIDUAL",
-        "RESIDUAL_GAIN",
-        "RESIDUAL_RAMP_SECONDS",
         "RESUME",
     )
     return {key: os.environ[key] for key in keys if key in os.environ}
 
 
-def torch_record() -> dict[str, Any]:
+def torch_record():
     try:
         import torch
 
-        out: dict[str, Any] = {
+        out = {
             "version": torch.__version__,
             "cuda_available": bool(torch.cuda.is_available()),
             "cuda_version": torch.version.cuda,
@@ -110,25 +104,27 @@ def torch_record() -> dict[str, Any]:
         }
         if torch.cuda.is_available():
             out["device_count"] = int(torch.cuda.device_count())
-            out["devices"] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
+            out["devices"] = [
+                torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())
+            ]
         return out
     except Exception as exc:
         return {"error": repr(exc)}
 
 
-def code_records(extra_files: list[Path | str] | None = None) -> list[dict[str, Any]]:
+def code_records(extra_files=None):
     files = [
-        ROOT / "competition_loiter_env.py",
-        ROOT / "competition_neuralplane" / "env.py",
-        ROOT / "loiter_gpu_stages.py",
-        ROOT / "fast_aip_policy.py",
-        ROOT / "fast_aip_sac.py",
-        ROOT / "bt_policy.py",
-        ROOT / "experiment_record.py",
+        ROOT / "fighter_rl" / "envs" / "loiter.py",
+        ROOT / "fighter_rl" / "sim" / "neuralplane" / "env.py",
+        ROOT / "fighter_rl" / "training" / "stages.py",
+        ROOT / "fighter_rl" / "models" / "ppo.py",
+        ROOT / "fighter_rl" / "models" / "sac.py",
+        ROOT / "fighter_rl" / "envs" / "bt_policy.py",
+        ROOT / "fighter_rl" / "utils" / "experiment_record.py",
     ]
     if extra_files:
         files.extend(Path(p) for p in extra_files)
-    seen: set[str] = set()
+    seen = set()
     out = []
     for path in files:
         key = str(Path(path).resolve())
@@ -140,14 +136,14 @@ def code_records(extra_files: list[Path | str] | None = None) -> list[dict[str, 
 
 
 def write_experiment_manifest(
-    run_dir: Path,
+    run_dir,
     *,
-    trainer: str,
-    args,
+    trainer,
+    cfg,
     profile,
     stages,
-    extra_code_files: list[Path | str] | None = None,
-) -> None:
+    extra_code_files=None,
+):
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
         "schema_version": 1,
@@ -162,11 +158,10 @@ def write_experiment_manifest(
         },
         "torch": torch_record(),
         "environment": selected_environment(),
-        "args": _jsonable(vars(args)),
+        "cfg": _jsonable(vars(cfg)),
         "profile": _jsonable(profile.as_metadata()),
         "artifacts": {
-            "resume": file_record(getattr(args, "resume", None)),
-            "residual": file_record(getattr(args, "residual", None)),
+            "resume": file_record(getattr(cfg, "resume", None)),
         },
         "code": code_records(extra_code_files),
         "stage_count": len(stages),
@@ -183,7 +178,7 @@ def write_experiment_manifest(
     )
 
 
-def append_jsonl(path: Path, row: dict[str, Any]) -> None:
+def append_jsonl(path, row):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(_jsonable(row), ensure_ascii=False, sort_keys=True))

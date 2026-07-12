@@ -4,35 +4,75 @@ For AIP lightweight inference, SAC bundles use the actor side of the RLModule.
 The Q networks are necessary for fast SAC training, but they are not used by
 ``RLActionProvider`` during submission-time inference.
 """
-from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from typing import NamedTuple
+from collections import namedtuple
 
 import torch
 from torch import nn
-
 
 ACTION_DIM = 4
 BASE_OBS_DIM = 16
 
 
-@dataclass(frozen=True)
 class AIPSACProfile:
-    variant: str
-    obs_dim: int
-    temporal_frames: int
-    include_previous_action: bool
-    actor_pre_hiddens: tuple[int, ...]
-    actor_post_hiddens: tuple[int, ...]
-    critic_pre_hiddens: tuple[int, ...]
-    critic_post_hiddens: tuple[int, ...]
-    use_lstm: bool
-    lstm_cell_size: int = 0
-    max_seq_len: int = 1
+    """Policy and critic shape descriptor for one SAC variant.
+
+    Args:
+        variant: Variant key used by JSON configs.
+        obs_dim: Flattened observation dimension.
+        temporal_frames: Number of temporal frames in the observation.
+        include_previous_action: Whether previous actions are appended.
+        actor_pre_hiddens: Actor layers before the LSTM.
+        actor_post_hiddens: Actor layers after the LSTM.
+        critic_pre_hiddens: Critic layers before the LSTM.
+        critic_post_hiddens: Critic layers after the LSTM.
+        use_lstm: Whether actor and critic use recurrent state.
+        lstm_cell_size: LSTM hidden size when recurrent.
+        max_seq_len: Sequence length used for recurrent training.
+    """
+
+    __slots__ = (
+        "variant",
+        "obs_dim",
+        "temporal_frames",
+        "include_previous_action",
+        "actor_pre_hiddens",
+        "actor_post_hiddens",
+        "critic_pre_hiddens",
+        "critic_post_hiddens",
+        "use_lstm",
+        "lstm_cell_size",
+        "max_seq_len",
+    )
+
+    def __init__(
+        self,
+        variant,
+        obs_dim,
+        temporal_frames,
+        include_previous_action,
+        actor_pre_hiddens,
+        actor_post_hiddens,
+        critic_pre_hiddens,
+        critic_post_hiddens,
+        use_lstm,
+        lstm_cell_size=0,
+        max_seq_len=1,
+    ):
+        self.variant = variant
+        self.obs_dim = obs_dim
+        self.temporal_frames = temporal_frames
+        self.include_previous_action = include_previous_action
+        self.actor_pre_hiddens = actor_pre_hiddens
+        self.actor_post_hiddens = actor_post_hiddens
+        self.critic_pre_hiddens = critic_pre_hiddens
+        self.critic_post_hiddens = critic_post_hiddens
+        self.use_lstm = use_lstm
+        self.lstm_cell_size = lstm_cell_size
+        self.max_seq_len = max_seq_len
 
     @property
-    def temporal_config(self) -> dict:
+    def temporal_config(self):
         return {
             "enabled": True,
             "frames": self.temporal_frames,
@@ -40,7 +80,7 @@ class AIPSACProfile:
         }
 
     @property
-    def network_spec(self) -> dict | None:
+    def network_spec(self):
         if not self.use_lstm:
             return None
         return {
@@ -68,7 +108,7 @@ class AIPSACProfile:
         }
 
     @property
-    def model_config(self) -> dict:
+    def model_config(self):
         if self.use_lstm:
             return {
                 "enabled": True,
@@ -89,8 +129,8 @@ class AIPSACProfile:
             "head_fcnet_activation": "relu",
         }
 
-    def as_metadata(self) -> dict:
-        return asdict(self) | {
+    def as_metadata(self):
+        return {name: getattr(self, name) for name in self.__slots__} | {
             "action_dim": ACTION_DIM,
             "base_observation_dim": BASE_OBS_DIM,
             "temporal_config": self.temporal_config,
@@ -99,7 +139,7 @@ class AIPSACProfile:
         }
 
 
-PROFILES: dict[str, AIPSACProfile] = {
+PROFILES = {
     "sac_mlp": AIPSACProfile(
         variant="sac_mlp",
         obs_dim=80,
@@ -127,7 +167,7 @@ PROFILES: dict[str, AIPSACProfile] = {
 }
 
 
-def get_sac_profile(variant: str) -> AIPSACProfile:
+def get_sac_profile(variant):
     key = str(variant).strip().lower()
     if key not in PROFILES:
         raise ValueError(
@@ -137,8 +177,8 @@ def get_sac_profile(variant: str) -> AIPSACProfile:
     return PROFILES[key]
 
 
-def mlp(sizes: list[int], activation=nn.ReLU, *, output_activation=None) -> nn.Sequential:
-    layers: list[nn.Module] = []
+def mlp(sizes, activation=nn.ReLU, *, output_activation=None):
+    layers = []
     for i in range(len(sizes) - 1):
         layers.append(nn.Linear(sizes[i], sizes[i + 1]))
         is_last = i == len(sizes) - 2
@@ -148,13 +188,11 @@ def mlp(sizes: list[int], activation=nn.ReLU, *, output_activation=None) -> nn.S
     return nn.Sequential(*layers)
 
 
-class SACOutput(NamedTuple):
-    logits: torch.Tensor
-    state: tuple[torch.Tensor, torch.Tensor] | None
+SACOutput = namedtuple("SACOutput", ("logits", "state"))
 
 
 class FastAIPSACActor(nn.Module):
-    def __init__(self, profile: AIPSACProfile | str):
+    def __init__(self, profile):
         super().__init__()
         self.profile = get_sac_profile(profile) if isinstance(profile, str) else profile
         if self.profile.use_lstm:
@@ -175,7 +213,7 @@ class FastAIPSACActor(nn.Module):
         self.head = nn.Linear(head_in, ACTION_DIM * 2)
         self.reset_output_initialization()
 
-    def reset_output_initialization(self) -> None:
+    def reset_output_initialization(self):
         # SAC is very sensitive to violent initial exploration in stage 0.
         # Bias the log-std half of the actor head to a moderate std while
         # keeping the exact AIP/RLlib actor output shape.
@@ -192,16 +230,14 @@ class FastAIPSACActor(nn.Module):
             self.head.bias[ACTION_DIM:].fill_(-1.0)
 
     @property
-    def obs_dim(self) -> int:
+    def obs_dim(self):
         return self.profile.obs_dim
 
     @property
-    def recurrent(self) -> bool:
+    def recurrent(self):
         return self.profile.use_lstm
 
-    def initial_state(
-        self, batch_size: int, device: torch.device | str | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+    def initial_state(self, batch_size, device=None):
         if not self.recurrent:
             return None
         dev = torch.device(device) if device is not None else next(self.parameters()).device
@@ -216,13 +252,13 @@ class FastAIPSACActor(nn.Module):
         return state[0].detach(), state[1].detach()
 
     @staticmethod
-    def mask_state(state, active: torch.Tensor):
+    def mask_state(state, active):
         if state is None:
             return None
         mask = active.reshape(1, -1, 1).to(dtype=state[0].dtype, device=state[0].device)
         return state[0] * mask, state[1] * mask
 
-    def forward_step(self, obs: torch.Tensor, state=None) -> SACOutput:
+    def forward_step(self, obs, state=None):
         x = self.pre(obs)
         next_state = state
         if self.recurrent:
@@ -234,7 +270,7 @@ class FastAIPSACActor(nn.Module):
         x = self.post(x)
         return SACOutput(self.head(x), next_state)
 
-    def forward_sequence(self, obs: torch.Tensor, state=None) -> SACOutput:
+    def forward_sequence(self, obs, state=None):
         t, b, d = obs.shape
         x = self.pre(obs.reshape(t * b, d)).reshape(t, b, -1)
         next_state = state
@@ -261,7 +297,7 @@ class FastAIPSACActor(nn.Module):
         return torch.distributions.Normal(mean, log_std.exp())
 
     @staticmethod
-    def _squash(raw_action: torch.Tensor, logp: torch.Tensor | None = None):
+    def _squash(raw_action, logp=None):
         action = torch.tanh(raw_action)
         if logp is None:
             return action, None
@@ -295,7 +331,7 @@ class FastAIPSACActor(nn.Module):
 
 
 class FastAIPSACCritic(nn.Module):
-    def __init__(self, profile: AIPSACProfile | str):
+    def __init__(self, profile):
         super().__init__()
         self.profile = get_sac_profile(profile) if isinstance(profile, str) else profile
         input_dim = self.profile.obs_dim + ACTION_DIM
@@ -347,7 +383,7 @@ class FastAIPSACCritic(nn.Module):
         return self.q(x).squeeze(-1)
 
 
-def soft_update(target: nn.Module, source: nn.Module, tau: float) -> None:
+def soft_update(target, source, tau):
     with torch.no_grad():
         for tp, sp in zip(target.parameters(), source.parameters()):
             tp.mul_(1.0 - tau).add_(sp, alpha=tau)
@@ -357,7 +393,7 @@ def _np(t):
     return t.detach().cpu().numpy()
 
 
-def rllib_sac_actor_weight_dict(actor: FastAIPSACActor, current_state: dict | None = None) -> dict[str, object]:
+def rllib_sac_actor_weight_dict(actor, current_state=None):
     """Map fast SAC actor weights to RLlib/AIP actor state keys.
 
     If ``current_state`` is provided, MLP key names are discovered by matching
@@ -403,14 +439,16 @@ def rllib_sac_actor_weight_dict(actor: FastAIPSACActor, current_state: dict | No
         ("head.weight", _np(state["head.weight"]), ("pi.", "weight")),
         ("head.bias", _np(state["head.bias"]), ("pi.", "bias")),
     ]
-    used: set[str] = set()
-    mapped: dict[str, object] = {}
+    used = set()
+    mapped = {}
     for _, value, tokens in expected:
         matches = []
         for key, cur in current_state.items():
             if key in used:
                 continue
-            if all(token in key for token in tokens) and tuple(np.asarray(cur).shape) == tuple(value.shape):
+            if all(token in key for token in tokens) and tuple(np.asarray(cur).shape) == tuple(
+                value.shape
+            ):
                 matches.append(key)
         if len(matches) != 1:
             raise RuntimeError(

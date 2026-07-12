@@ -16,33 +16,67 @@ RLlib's PPO Gaussian head for Box(4) actions emits 8 values
 `log_std` parameter, which trains fine as a standalone `.pt`, but is not a
 clean shape match for the lightweight bundle.  This file fixes that.
 """
-from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from typing import NamedTuple
+from collections import namedtuple
 
 import torch
 from torch import nn
-
 
 ACTION_DIM = 4
 BASE_OBS_DIM = 16
 
 
-@dataclass(frozen=True)
 class AIPPolicyProfile:
-    variant: str
-    algo: str
-    obs_dim: int
-    temporal_frames: int
-    include_previous_action: bool
-    encoder_hiddens: tuple[int, int]
-    use_lstm: bool
-    lstm_cell_size: int = 0
-    max_seq_len: int = 1
+    """Policy shape/config descriptor for one AIP PPO variant.
+
+    Args:
+        variant: Variant key used by JSON configs.
+        algo: Training algorithm name.
+        obs_dim: Flattened observation dimension.
+        temporal_frames: Number of temporal frames in the observation.
+        include_previous_action: Whether previous actions are appended.
+        encoder_hiddens: Encoder MLP hidden sizes.
+        use_lstm: Whether the policy uses recurrent state.
+        lstm_cell_size: LSTM hidden size when recurrent.
+        max_seq_len: Sequence length used for recurrent training.
+    """
+
+    __slots__ = (
+        "variant",
+        "algo",
+        "obs_dim",
+        "temporal_frames",
+        "include_previous_action",
+        "encoder_hiddens",
+        "use_lstm",
+        "lstm_cell_size",
+        "max_seq_len",
+    )
+
+    def __init__(
+        self,
+        variant,
+        algo,
+        obs_dim,
+        temporal_frames,
+        include_previous_action,
+        encoder_hiddens,
+        use_lstm,
+        lstm_cell_size=0,
+        max_seq_len=1,
+    ):
+        self.variant = variant
+        self.algo = algo
+        self.obs_dim = obs_dim
+        self.temporal_frames = temporal_frames
+        self.include_previous_action = include_previous_action
+        self.encoder_hiddens = encoder_hiddens
+        self.use_lstm = use_lstm
+        self.lstm_cell_size = lstm_cell_size
+        self.max_seq_len = max_seq_len
 
     @property
-    def temporal_config(self) -> dict:
+    def temporal_config(self):
         return {
             "enabled": True,
             "frames": self.temporal_frames,
@@ -50,7 +84,7 @@ class AIPPolicyProfile:
         }
 
     @property
-    def model_config(self) -> dict:
+    def model_config(self):
         payload = {
             "enabled": True,
             "fcnet_hiddens": list(self.encoder_hiddens),
@@ -69,8 +103,8 @@ class AIPPolicyProfile:
             )
         return payload
 
-    def as_metadata(self) -> dict:
-        return asdict(self) | {
+    def as_metadata(self):
+        return {name: getattr(self, name) for name in self.__slots__} | {
             "action_dim": ACTION_DIM,
             "base_observation_dim": BASE_OBS_DIM,
             "temporal_config": self.temporal_config,
@@ -78,7 +112,7 @@ class AIPPolicyProfile:
         }
 
 
-PROFILES: dict[str, AIPPolicyProfile] = {
+PROFILES = {
     "ppo_mlp": AIPPolicyProfile(
         variant="ppo_mlp",
         algo="ppo",
@@ -102,7 +136,7 @@ PROFILES: dict[str, AIPPolicyProfile] = {
 }
 
 
-def get_profile(variant: str) -> AIPPolicyProfile:
+def get_profile(variant):
     key = str(variant).strip().lower()
     if key not in PROFILES:
         raise ValueError(
@@ -112,16 +146,13 @@ def get_profile(variant: str) -> AIPPolicyProfile:
     return PROFILES[key]
 
 
-class PolicyOutput(NamedTuple):
-    logits: torch.Tensor
-    value: torch.Tensor
-    state: tuple[torch.Tensor, torch.Tensor] | None
+PolicyOutput = namedtuple("PolicyOutput", ("logits", "value", "state"))
 
 
 class FastAIPPPOPolicy(nn.Module):
     """PPO actor-critic with RLlib-compatible PPO head shapes."""
 
-    def __init__(self, profile: AIPPolicyProfile | str):
+    def __init__(self, profile):
         super().__init__()
         self.profile = get_profile(profile) if isinstance(profile, str) else profile
         h1, h2 = self.profile.encoder_hiddens
@@ -141,7 +172,7 @@ class FastAIPPPOPolicy(nn.Module):
         self.vf = nn.Linear(head_in, 1)
         self.reset_output_initialization()
 
-    def reset_output_initialization(self) -> None:
+    def reset_output_initialization(self):
         # Keep the initial policy close to "small controls" instead of a nearly
         # full-range random actuator.  This preserves the RLlib-compatible head
         # shape while making stage-0 survival learnable.
@@ -162,16 +193,14 @@ class FastAIPPPOPolicy(nn.Module):
         nn.init.zeros_(self.vf.bias)
 
     @property
-    def obs_dim(self) -> int:
+    def obs_dim(self):
         return self.profile.obs_dim
 
     @property
-    def recurrent(self) -> bool:
+    def recurrent(self):
         return self.profile.use_lstm
 
-    def initial_state(
-        self, batch_size: int, device: torch.device | str | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+    def initial_state(self, batch_size, device=None):
         if not self.recurrent:
             return None
         dev = torch.device(device) if device is not None else next(self.parameters()).device
@@ -181,16 +210,14 @@ class FastAIPPPOPolicy(nn.Module):
 
     @staticmethod
     def detach_state(
-        state: tuple[torch.Tensor, torch.Tensor] | None,
-    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        state,
+    ):
         if state is None:
             return None
         return state[0].detach(), state[1].detach()
 
     @staticmethod
-    def mask_state(
-        state: tuple[torch.Tensor, torch.Tensor] | None, active: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+    def mask_state(state, active):
         if state is None:
             return None
         mask = active.reshape(1, -1, 1).to(dtype=torch.bool, device=state[0].device)
@@ -200,9 +227,9 @@ class FastAIPPPOPolicy(nn.Module):
 
     def forward_step(
         self,
-        obs: torch.Tensor,
-        state: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> PolicyOutput:
+        obs,
+        state=None,
+    ):
         obs = torch.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
         features = self.encoder(obs)
         features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
@@ -227,9 +254,9 @@ class FastAIPPPOPolicy(nn.Module):
 
     def forward_sequence(
         self,
-        obs_seq: torch.Tensor,
-        state: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> PolicyOutput:
+        obs_seq,
+        state=None,
+    ):
         """Run a full rollout sequence.
 
         Args:
@@ -262,12 +289,12 @@ class FastAIPPPOPolicy(nn.Module):
 
     @staticmethod
     def action_distribution(
-        logits: torch.Tensor,
+        logits,
         *,
-        log_std_min: float = -5.0,
-        log_std_max: float = 1.0,
-        mean_clip: float = 10.0,
-    ) -> torch.distributions.Normal:
+        log_std_min=-5.0,
+        log_std_max=1.0,
+        mean_clip=10.0,
+    ):
         mean, log_std = logits.split(ACTION_DIM, dim=-1)
         mean = torch.nan_to_num(mean, nan=0.0, posinf=mean_clip, neginf=-mean_clip)
         if mean_clip > 0:
@@ -282,13 +309,13 @@ class FastAIPPPOPolicy(nn.Module):
 
     def sample_step(
         self,
-        obs: torch.Tensor,
-        state: tuple[torch.Tensor, torch.Tensor] | None = None,
+        obs,
+        state=None,
         *,
-        log_std_min: float = -5.0,
-        log_std_max: float = 1.0,
-        mean_clip: float = 10.0,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+        log_std_min=-5.0,
+        log_std_max=1.0,
+        mean_clip=10.0,
+    ):
         output = self.forward_step(obs, state)
         dist = self.action_distribution(
             output.logits,
@@ -304,9 +331,9 @@ class FastAIPPPOPolicy(nn.Module):
 
     def deterministic_action(
         self,
-        obs: torch.Tensor,
-        state: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+        obs,
+        state=None,
+    ):
         output = self.forward_step(obs, state)
         mean, _ = output.logits.split(ACTION_DIM, dim=-1)
         mean = torch.nan_to_num(mean, nan=0.0, posinf=1.0, neginf=-1.0)
@@ -314,13 +341,13 @@ class FastAIPPPOPolicy(nn.Module):
 
 
 def evaluate_logp_entropy(
-    logits: torch.Tensor,
-    raw_action: torch.Tensor,
+    logits,
+    raw_action,
     *,
-    log_std_min: float = -5.0,
-    log_std_max: float = 1.0,
-    mean_clip: float = 10.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    log_std_min=-5.0,
+    log_std_max=1.0,
+    mean_clip=10.0,
+):
     dist = FastAIPPPOPolicy.action_distribution(
         logits,
         log_std_min=log_std_min,
@@ -330,42 +357,44 @@ def evaluate_logp_entropy(
     return dist.log_prob(raw_action).sum(-1), dist.entropy().sum(-1)
 
 
-def rllib_weight_dict(policy: FastAIPPPOPolicy) -> dict[str, object]:
+def rllib_weight_dict(policy):
     """Map a fast PPO policy into AIP/RLlib lightweight-bundle state keys."""
     import numpy as np
 
     state = policy.state_dict()
     const = np.asarray([20.0], dtype=np.float32)
-    result: dict[str, object] = {
+    result = {
         "pi.log_std_clip_param_const": const,
     }
     if policy.profile.use_lstm:
         result.update(
             {
-                "encoder.encoder.tokenizer.net.mlp.0.weight": state[
-                    "encoder.0.weight"
-                ].detach().cpu().numpy(),
-                "encoder.encoder.tokenizer.net.mlp.0.bias": state[
-                    "encoder.0.bias"
-                ].detach().cpu().numpy(),
-                "encoder.encoder.tokenizer.net.mlp.2.weight": state[
-                    "encoder.2.weight"
-                ].detach().cpu().numpy(),
-                "encoder.encoder.tokenizer.net.mlp.2.bias": state[
-                    "encoder.2.bias"
-                ].detach().cpu().numpy(),
-                "encoder.encoder.lstm.weight_ih_l0": state[
-                    "lstm.weight_ih_l0"
-                ].detach().cpu().numpy(),
-                "encoder.encoder.lstm.weight_hh_l0": state[
-                    "lstm.weight_hh_l0"
-                ].detach().cpu().numpy(),
-                "encoder.encoder.lstm.bias_ih_l0": state[
-                    "lstm.bias_ih_l0"
-                ].detach().cpu().numpy(),
-                "encoder.encoder.lstm.bias_hh_l0": state[
-                    "lstm.bias_hh_l0"
-                ].detach().cpu().numpy(),
+                "encoder.encoder.tokenizer.net.mlp.0.weight": state["encoder.0.weight"]
+                .detach()
+                .cpu()
+                .numpy(),
+                "encoder.encoder.tokenizer.net.mlp.0.bias": state["encoder.0.bias"]
+                .detach()
+                .cpu()
+                .numpy(),
+                "encoder.encoder.tokenizer.net.mlp.2.weight": state["encoder.2.weight"]
+                .detach()
+                .cpu()
+                .numpy(),
+                "encoder.encoder.tokenizer.net.mlp.2.bias": state["encoder.2.bias"]
+                .detach()
+                .cpu()
+                .numpy(),
+                "encoder.encoder.lstm.weight_ih_l0": state["lstm.weight_ih_l0"]
+                .detach()
+                .cpu()
+                .numpy(),
+                "encoder.encoder.lstm.weight_hh_l0": state["lstm.weight_hh_l0"]
+                .detach()
+                .cpu()
+                .numpy(),
+                "encoder.encoder.lstm.bias_ih_l0": state["lstm.bias_ih_l0"].detach().cpu().numpy(),
+                "encoder.encoder.lstm.bias_hh_l0": state["lstm.bias_hh_l0"].detach().cpu().numpy(),
                 "pi.net.mlp.0.weight": state["pi.weight"].detach().cpu().numpy(),
                 "pi.net.mlp.0.bias": state["pi.bias"].detach().cpu().numpy(),
                 "vf.log_std_clip_param_const": const,
@@ -376,18 +405,16 @@ def rllib_weight_dict(policy: FastAIPPPOPolicy) -> dict[str, object]:
     else:
         result.update(
             {
-                "encoder.encoder.net.mlp.0.weight": state[
-                    "encoder.0.weight"
-                ].detach().cpu().numpy(),
-                "encoder.encoder.net.mlp.0.bias": state[
-                    "encoder.0.bias"
-                ].detach().cpu().numpy(),
-                "encoder.encoder.net.mlp.2.weight": state[
-                    "encoder.2.weight"
-                ].detach().cpu().numpy(),
-                "encoder.encoder.net.mlp.2.bias": state[
-                    "encoder.2.bias"
-                ].detach().cpu().numpy(),
+                "encoder.encoder.net.mlp.0.weight": state["encoder.0.weight"]
+                .detach()
+                .cpu()
+                .numpy(),
+                "encoder.encoder.net.mlp.0.bias": state["encoder.0.bias"].detach().cpu().numpy(),
+                "encoder.encoder.net.mlp.2.weight": state["encoder.2.weight"]
+                .detach()
+                .cpu()
+                .numpy(),
+                "encoder.encoder.net.mlp.2.bias": state["encoder.2.bias"].detach().cpu().numpy(),
                 "pi.net.mlp.0.weight": state["pi.weight"].detach().cpu().numpy(),
                 "pi.net.mlp.0.bias": state["pi.bias"].detach().cpu().numpy(),
             }

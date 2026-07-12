@@ -17,7 +17,7 @@ env/
 fast_aip_ppo_runs/
 fast_aip_sac_runs/
 exported_bundles/
-models/
+/models/
 dataset/
 results/
 residual_refinement/

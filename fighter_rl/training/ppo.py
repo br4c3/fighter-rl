@@ -11,27 +11,24 @@ It intentionally does not use RLlib for rollout collection.  RLlib is only used
 later by ``export_fast_ppo_to_rllib_bundle.py`` to prove/perform bundle
 compatibility.
 """
-from __future__ import annotations
 
-import argparse
 import json
-import os
 import random
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
 
 import torch
 from torch import nn
 
-from competition_loiter_env import CompetitionLoiterCurriculumEnv
-from experiment_record import append_jsonl, write_experiment_manifest
-from fast_aip_policy import FastAIPPPOPolicy, evaluate_logp_entropy, get_profile
-from loiter_gpu_stages import LoiterStage, advancement_satisfied, load_stages
+from fighter_rl.envs.loiter import CompetitionLoiterCurriculumEnv
+from fighter_rl.models.ppo import FastAIPPPOPolicy, evaluate_logp_entropy, get_profile
+from fighter_rl.training.stages import LoiterStage, advancement_satisfied, load_stages
+from fighter_rl.utils.config import load_training_config
+from fighter_rl.utils.experiment_record import append_jsonl, write_experiment_manifest
 
 
-def average_window(window: deque[dict[str, float]]) -> dict[str, float]:
+def average_window(window):
     if not window:
         return {}
     # Each item in ``window`` is not a raw log line.  It is an episodic summary
@@ -42,7 +39,7 @@ def average_window(window: deque[dict[str, float]]) -> dict[str, float]:
     weights = [max(0.0, float(item.get("episodes", 0.0))) for item in window]
     total_weight = sum(weights)
     keys = set().union(*(item.keys() for item in window))
-    out: dict[str, float] = {}
+    out = {}
     if "episodes" in keys:
         out["episodes"] = total_weight
     for key in keys:
@@ -65,13 +62,13 @@ def average_window(window: deque[dict[str, float]]) -> dict[str, float]:
 
 
 def format_gate(
-    stage: LoiterStage,
-    rolling: dict[str, float],
-    window_len: int,
-    required: int,
-    pass_streak: int = 0,
-    required_passes: int = 1,
-) -> str:
+    stage,
+    rolling,
+    window_len,
+    required,
+    pass_streak=0,
+    required_passes=1,
+):
     if window_len < required:
         return f"pending({window_len}/{required})"
     ok, reason = advancement_satisfied(stage, rolling)
@@ -82,7 +79,7 @@ def format_gate(
     return text
 
 
-def format_safety_metrics(rolling: dict[str, float]) -> str:
+def format_safety_metrics(rolling):
     """Compact console view for the gun-curriculum guardrail metrics."""
     if not any(
         key in rolling
@@ -123,17 +120,17 @@ def format_safety_metrics(rolling: dict[str, float]) -> str:
 
 def format_training_line(
     *,
-    stage_index: int,
-    update: int,
-    valid_steps: int,
-    decision: int,
-    decision_limit: int,
-    reward_mean: float,
-    loss_text: str,
-    rolling: dict[str, float],
-    gate: str,
-    extra: str = "",
-) -> str:
+    stage_index,
+    update,
+    valid_steps,
+    decision,
+    decision_limit,
+    reward_mean,
+    loss_text,
+    rolling,
+    gate,
+    extra="",
+):
     episodes = float(rolling.get("episodes", 0.0))
     parts = [
         f"stage={stage_index}",
@@ -164,7 +161,7 @@ def format_training_line(
     return " ".join(part for part in parts if part)
 
 
-def stage_env_config(stage: LoiterStage, profile) -> dict[str, Any]:
+def stage_env_config(stage, profile):
     return {
         "observation_mode": "tactical16",
         "target_mode": "loiter",
@@ -186,16 +183,16 @@ def stage_env_config(stage: LoiterStage, profile) -> dict[str, Any]:
 
 
 def save_checkpoint(
-    path: Path,
+    path,
     *,
-    model: FastAIPPPOPolicy,
-    stage: LoiterStage,
-    stage_update: int,
-    total_valid_steps: int,
-    args,
-    metrics: dict[str, float],
-    status: str,
-) -> None:
+    model,
+    stage,
+    stage_update,
+    total_valid_steps,
+    cfg,
+    metrics,
+    status,
+):
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -213,13 +210,13 @@ def save_checkpoint(
             "metrics": metrics,
             "status": status,
             "env_config": stage_env_config(stage, model.profile),
-            "config": vars(args),
+            "config": vars(cfg),
         },
         path,
     )
 
 
-def load_resume(path: Path, model: FastAIPPPOPolicy, device: torch.device):
+def load_resume(path, model, device):
     payload = torch.load(path, map_location=device, weights_only=False)
     variant = payload.get("variant")
     if variant and variant != model.profile.variant:
@@ -231,105 +228,17 @@ def load_resume(path: Path, model: FastAIPPPOPolicy, device: torch.device):
     return payload
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--variant", choices=["ppo_mlp", "ppo_lstm"], default="ppo_lstm")
-    p.add_argument("--device", default="cuda")
-    p.add_argument("--num-envs", type=int, default=4096)
-    p.add_argument("--horizon", type=int, default=0, help="0 = profile default")
-    p.add_argument("--epochs", type=int, default=4)
-    p.add_argument("--minibatch", type=int, default=65536)
-    p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--gamma", type=float, default=0.99)
-    p.add_argument("--gae-lambda", type=float, default=0.95)
-    p.add_argument("--clip", type=float, default=0.2)
-    p.add_argument("--vf-coef", type=float, default=0.5)
-    p.add_argument("--entropy-coef", type=float, default=0.002)
-    p.add_argument("--grad-clip", type=float, default=0.5)
-    p.add_argument("--log-std-min", type=float, default=-5.0)
-    p.add_argument("--log-std-max", type=float, default=1.0)
-    p.add_argument(
-        "--action-mean-clip",
-        type=float,
-        default=10.0,
-        help=(
-            "Clamp PPO Gaussian mean only for training-time distribution "
-            "construction. This prevents rare non-finite actor outputs from "
-            "terminating long server runs; the exported network is still "
-            "regularized to keep raw means small."
-        ),
-    )
-    p.add_argument(
-        "--action-mean-l2-coef",
-        type=float,
-        default=1e-4,
-        help=(
-            "Small penalty on raw PPO action means.  It discourages saturated "
-            "unexportable policies such as throttle mean >> 1 while leaving "
-            "normal clipped actions essentially unchanged."
-        ),
-    )
-    p.add_argument(
-        "--min-valid-fraction",
-        type=float,
-        default=0.05,
-        help=(
-            "Skip the PPO update and reset the synchronous batch when fewer "
-            "than this fraction of horizon*num_envs transitions are valid. "
-            "This prevents late-episode tail rollouts with only a handful of "
-            "survivors from destabilizing LSTM PPO."
-        ),
-    )
-    p.add_argument("--max-updates-per-stage", type=int, default=20000)
-    p.add_argument("--advance-window", type=int, default=8)
-    p.add_argument(
-        "--advance-patience",
-        type=int,
-        default=3,
-        help="Number of consecutive passing rolling-window checks required before advancing.",
-    )
-    p.add_argument("--checkpoint-interval", type=int, default=50)
-    p.add_argument(
-        "--log-interval",
-        type=int,
-        default=1,
-        help="Console print interval in updates. metrics.jsonl is still written every update.",
-    )
-    p.add_argument("--start-stage", type=int, default=0)
-    p.add_argument("--stop-stage", type=int, default=None)
-    p.add_argument(
-        "--stage-schedule",
-        default=os.environ.get("LOITER_STAGE_SCHEDULE") or os.environ.get("STAGE_SCHEDULE") or "aip",
-        help=(
-            "Stage schedule: 'aip' for original 12 stages, 'kill_bridge' "
-            "for the loiter-to-kill bridge schedule, or 'gun_curriculum' "
-            "for the tight-WEZ trailing/shooting curriculum. Use "
-            "'gun_bucket_curriculum' for the axis-separated bucket schedule."
-        ),
-    )
-    p.add_argument("--resume", type=Path)
-    p.add_argument("--output", type=Path, default=Path("fast_aip_ppo_runs"))
-    p.add_argument("--seed", type=int, default=7)
-    p.add_argument("--target-maneuver", default="random_loiter")
-    p.add_argument("--residual", type=Path)
-    p.add_argument("--residual-gain", type=float, default=0.3)
-    p.add_argument("--residual-ramp-seconds", type=float, default=5.0)
-    p.add_argument("--no-domain-randomization", action="store_true")
-    p.add_argument("--no-auto-advance", action="store_true")
-    return p
-
-
 def ppo_update_mlp(
-    model: FastAIPPPOPolicy,
-    optimizer: torch.optim.Optimizer,
-    obs: torch.Tensor,
-    raw: torch.Tensor,
-    old_logp: torch.Tensor,
-    advantages: torch.Tensor,
-    returns: torch.Tensor,
-    valid: torch.Tensor,
-    args,
-) -> list[torch.Tensor]:
+    model,
+    optimizer,
+    obs,
+    raw,
+    old_logp,
+    advantages,
+    returns,
+    valid,
+    cfg,
+):
     mask = valid.reshape(-1)
     flat_obs = obs.reshape(-1, model.obs_dim)[mask]
     flat_raw = raw.reshape(-1, 4)[mask]
@@ -339,39 +248,39 @@ def ppo_update_mlp(
     if flat_adv.numel() < 2:
         return []
     flat_adv = (flat_adv - flat_adv.mean()) / (flat_adv.std(unbiased=False) + 1e-8)
-    losses: list[torch.Tensor] = []
+    losses = []
     count = flat_adv.shape[0]
-    for _ in range(args.epochs):
+    for _ in range(cfg.epochs):
         order = torch.randperm(count, device=flat_adv.device)
-        for start in range(0, count, args.minibatch):
-            idx = order[start : start + args.minibatch]
+        for start in range(0, count, cfg.minibatch):
+            idx = order[start : start + cfg.minibatch]
             output = model.forward_step(flat_obs[idx])
             logp, entropy = evaluate_logp_entropy(
                 output.logits,
                 flat_raw[idx],
-                log_std_min=args.log_std_min,
-                log_std_max=args.log_std_max,
-                mean_clip=args.action_mean_clip,
+                log_std_min=cfg.log_std_min,
+                log_std_max=cfg.log_std_max,
+                mean_clip=cfg.action_mean_clip,
             )
             action_mean = output.logits[..., :4]
             ratio = (logp - flat_old_logp[idx]).exp()
             policy_loss = -torch.minimum(
                 ratio * flat_adv[idx],
-                ratio.clamp(1 - args.clip, 1 + args.clip) * flat_adv[idx],
+                ratio.clamp(1 - cfg.clip, 1 + cfg.clip) * flat_adv[idx],
             ).mean()
             value_loss = (output.value - flat_ret[idx]).square().mean()
             mean_loss = action_mean.square().mean()
             loss = (
                 policy_loss
-                + args.vf_coef * value_loss
-                - args.entropy_coef * entropy.mean()
-                + args.action_mean_l2_coef * mean_loss
+                + cfg.vf_coef * value_loss
+                - cfg.entropy_coef * entropy.mean()
+                + cfg.action_mean_l2_coef * mean_loss
             )
             if not bool(torch.isfinite(loss)):
                 continue
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             if not bool(torch.isfinite(grad_norm)):
                 optimizer.zero_grad(set_to_none=True)
                 continue
@@ -381,21 +290,21 @@ def ppo_update_mlp(
 
 
 def ppo_update_lstm(
-    model: FastAIPPPOPolicy,
-    optimizer: torch.optim.Optimizer,
-    obs: torch.Tensor,
-    raw: torch.Tensor,
-    old_logp: torch.Tensor,
-    advantages: torch.Tensor,
-    returns: torch.Tensor,
-    valid: torch.Tensor,
-    initial_state: tuple[torch.Tensor, torch.Tensor],
-    args,
-) -> list[torch.Tensor]:
+    model,
+    optimizer,
+    obs,
+    raw,
+    old_logp,
+    advantages,
+    returns,
+    valid,
+    initial_state,
+    cfg,
+):
     t_steps, n_envs, _ = obs.shape
-    envs_per_minibatch = max(1, int(args.minibatch) // max(1, t_steps))
-    losses: list[torch.Tensor] = []
-    for _ in range(args.epochs):
+    envs_per_minibatch = max(1, int(cfg.minibatch) // max(1, t_steps))
+    losses = []
+    for _ in range(cfg.epochs):
         order = torch.randperm(n_envs, device=obs.device)
         for start in range(0, n_envs, envs_per_minibatch):
             idx = order[start : start + envs_per_minibatch]
@@ -405,9 +314,9 @@ def ppo_update_lstm(
             logp, entropy = evaluate_logp_entropy(
                 output.logits,
                 raw[:, idx],
-                log_std_min=args.log_std_min,
-                log_std_max=args.log_std_max,
-                mean_clip=args.action_mean_clip,
+                log_std_min=cfg.log_std_min,
+                log_std_max=cfg.log_std_max,
+                mean_clip=cfg.action_mean_clip,
             )
             mask = valid[:, idx].reshape(-1)
             if not bool(mask.any()):
@@ -425,21 +334,21 @@ def ppo_update_lstm(
             ratio = (mb_logp - mb_old_logp).exp()
             policy_loss = -torch.minimum(
                 ratio * mb_adv,
-                ratio.clamp(1 - args.clip, 1 + args.clip) * mb_adv,
+                ratio.clamp(1 - cfg.clip, 1 + cfg.clip) * mb_adv,
             ).mean()
             value_loss = (mb_value - mb_ret).square().mean()
             mean_loss = action_mean.square().mean()
             loss = (
                 policy_loss
-                + args.vf_coef * value_loss
-                - args.entropy_coef * mb_entropy.mean()
-                + args.action_mean_l2_coef * mean_loss
+                + cfg.vf_coef * value_loss
+                - cfg.entropy_coef * mb_entropy.mean()
+                + cfg.action_mean_l2_coef * mean_loss
             )
             if not bool(torch.isfinite(loss)):
                 continue
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             if not bool(torch.isfinite(grad_norm)):
                 optimizer.zero_grad(set_to_none=True)
                 continue
@@ -448,99 +357,95 @@ def ppo_update_lstm(
     return losses
 
 
-def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
-    profile = get_profile(args.variant)
-    if args.horizon <= 0:
-        args.horizon = profile.max_seq_len if profile.use_lstm else 64
-    if profile.use_lstm and args.horizon > profile.max_seq_len:
+def main():
+    cfg = load_training_config("configs/ppo_lstm.json")
+    profile = get_profile(cfg.variant)
+    if cfg.horizon <= 0:
+        cfg.horizon = profile.max_seq_len if profile.use_lstm else 64
+    if profile.use_lstm and cfg.horizon > profile.max_seq_len:
         print(
-            f"[warn] PPO-LSTM horizon {args.horizon} > AIP max_seq_len "
+            f"[warn] PPO-LSTM horizon {cfg.horizon} > AIP max_seq_len "
             f"{profile.max_seq_len}; export still uses max_seq_len={profile.max_seq_len}",
             flush=True,
         )
 
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
-    if args.device == "cpu":
+    torch.manual_seed(cfg.seed)
+    random.seed(cfg.seed)
+    if cfg.device == "cpu":
         torch.set_num_threads(1)
-    device = torch.device(args.device)
-    stages = load_stages(schedule=args.stage_schedule)
-    if args.stop_stage is None:
-        args.stop_stage = len(stages) - 1
-    if args.stop_stage >= len(stages):
-        raise ValueError(f"stop-stage {args.stop_stage} exceeds available stages {len(stages)-1}")
+    device = torch.device(cfg.device)
+    stages = load_stages(schedule=cfg.stage_schedule)
+    if cfg.stop_stage is None:
+        cfg.stop_stage = len(stages) - 1
+    if cfg.stop_stage >= len(stages):
+        raise ValueError(f"stop-stage {cfg.stop_stage} exceeds available stages {len(stages)-1}")
 
     model = FastAIPPPOPolicy(profile).to(device)
     total_valid = 0
     resume_update = 0
-    start_stage = args.start_stage
-    if args.resume:
-        payload = load_resume(args.resume, model, device)
+    start_stage = cfg.start_stage
+    if cfg.resume:
+        payload = load_resume(cfg.resume, model, device)
         saved_stage = int(payload.get("stage_index", start_stage))
-        if args.start_stage == 0:
+        if cfg.start_stage == 0:
             start_stage = saved_stage
             resume_update = int(payload.get("stage_update", 0))
-        elif args.start_stage == saved_stage:
+        elif cfg.start_stage == saved_stage:
             resume_update = int(payload.get("stage_update", 0))
         total_valid = int(payload.get("steps", 0))
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    run = args.output / f"{args.variant}_{args.target_maneuver}_{time.strftime('%Y%m%d_%H%M%S')}"
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    run = cfg.output / f"{cfg.variant}_{cfg.target_maneuver}_{time.strftime('%Y%m%d_%H%M%S')}"
     run.mkdir(parents=True, exist_ok=False)
     (run / "config.json").write_text(
-        json.dumps(vars(args) | {"profile": profile.as_metadata()}, default=str, indent=2),
+        json.dumps(vars(cfg) | {"profile": profile.as_metadata()}, default=str, indent=2),
         encoding="utf-8",
     )
     write_experiment_manifest(
         run,
         trainer="train_fast_aip_ppo",
-        args=args,
+        cfg=cfg,
         profile=profile,
         stages=stages,
         extra_code_files=[Path(__file__)],
     )
     metrics_log_path = run / "metrics.jsonl"
 
-    curriculum_log: list[dict[str, Any]] = []
-    for stage_index in range(start_stage, args.stop_stage + 1):
+    curriculum_log = []
+    for stage_index in range(start_stage, cfg.stop_stage + 1):
         stage = stages[stage_index]
         stage_dir = run / f"stage_{stage_index:02d}_{stage.name}"
         stage_dir.mkdir(parents=True, exist_ok=True)
         env = CompetitionLoiterCurriculumEnv(
             stage,
-            num_envs=args.num_envs,
+            num_envs=cfg.num_envs,
             device=device,
-            domain_randomization=not args.no_domain_randomization,
-            residual=args.residual,
-            residual_gain=args.residual_gain,
-            residual_ramp_seconds=args.residual_ramp_seconds,
-            target_maneuver=args.target_maneuver,
+            domain_randomization=not cfg.no_domain_randomization,
+            target_maneuver=cfg.target_maneuver,
             temporal_frames=profile.temporal_frames,
             include_previous_action=profile.include_previous_action,
         )
         obs_now = env.reset()
         if obs_now.shape[-1] != profile.obs_dim:
             raise RuntimeError(
-                f"Observation contract mismatch for {args.variant}: "
+                f"Observation contract mismatch for {cfg.variant}: "
                 f"env returned {obs_now.shape[-1]}, expected {profile.obs_dim}"
             )
-        state = model.initial_state(args.num_envs, device)
-        window: deque[dict[str, float]] = deque(maxlen=args.advance_window)
+        state = model.initial_state(cfg.num_envs, device)
+        window = deque(maxlen=cfg.advance_window)
         first_update = resume_update + 1 if stage_index == start_stage else 1
         advanced = False
         pass_streak = 0
         print(
-            f"[stage {stage_index}/{args.stop_stage}] {stage.name} "
-            f"variant={args.variant} obs={profile.obs_dim} frames={profile.temporal_frames} "
-            f"target={args.target_maneuver} decision_limit={stage.decision_limit} "
-            f"step_ratio={stage.step_ratio} advance_window={args.advance_window} "
-            f"advance_patience={args.advance_patience}",
+            f"[stage {stage_index}/{cfg.stop_stage}] {stage.name} "
+            f"variant={cfg.variant} obs={profile.obs_dim} frames={profile.temporal_frames} "
+            f"target={cfg.target_maneuver} decision_limit={stage.decision_limit} "
+            f"step_ratio={stage.step_ratio} advance_window={cfg.advance_window} "
+            f"advance_patience={cfg.advance_patience}",
             flush=True,
         )
 
-        for update in range(first_update, args.max_updates_per_stage + 1):
+        for update in range(first_update, cfg.max_updates_per_stage + 1):
             obs_buf = []
             raw_buf = []
             logp_buf = []
@@ -549,14 +454,14 @@ def main() -> int:
             done_buf = []
             valid_buf = []
             initial_state = model.detach_state(state)
-            for _ in range(args.horizon):
+            for _ in range(cfg.horizon):
                 with torch.no_grad():
                     action, raw, logp, value, next_state = model.sample_step(
                         obs_now,
                         state,
-                        log_std_min=args.log_std_min,
-                        log_std_max=args.log_std_max,
-                        mean_clip=args.action_mean_clip,
+                        log_std_min=cfg.log_std_min,
+                        log_std_max=cfg.log_std_max,
+                        mean_clip=cfg.action_mean_clip,
                     )
                 next_obs, reward, done, info = env.step(action)
                 valid = info["valid"].bool()
@@ -589,12 +494,12 @@ def main() -> int:
             with torch.no_grad():
                 next_value = model.forward_step(obs_now, state).value
             advantages = torch.zeros_like(rewards)
-            last = torch.zeros(args.num_envs, device=device)
+            last = torch.zeros(cfg.num_envs, device=device)
             for t in reversed(range(rewards.shape[0])):
                 nv = next_value if t == rewards.shape[0] - 1 else values[t + 1]
                 nonterminal = (1.0 - dones[t]) * valids[t].float()
-                delta = (rewards[t] + args.gamma * nv * nonterminal - values[t]) * valids[t].float()
-                last = delta + args.gamma * args.gae_lambda * nonterminal * last
+                delta = (rewards[t] + cfg.gamma * nv * nonterminal - values[t]) * valids[t].float()
+                last = delta + cfg.gamma * cfg.gae_lambda * nonterminal * last
                 advantages[t] = last
             returns = advantages + values
 
@@ -602,7 +507,7 @@ def main() -> int:
             total_valid += valid_count
             min_valid_count = max(
                 2,
-                int(valids.numel() * max(0.0, float(args.min_valid_fraction))),
+                int(valids.numel() * max(0.0, float(cfg.min_valid_fraction))),
             )
             if valid_count < min_valid_count:
                 rolling = average_window(window)
@@ -612,9 +517,9 @@ def main() -> int:
                     stage,
                     rolling,
                     len(window),
-                    args.advance_window,
+                    cfg.advance_window,
                     pass_streak,
-                    args.advance_patience,
+                    cfg.advance_patience,
                 )
                 print(
                     format_training_line(
@@ -631,24 +536,27 @@ def main() -> int:
                     ),
                     flush=True,
                 )
-                append_jsonl(metrics_log_path, {
-                    "stage": stage_index,
-                    "stage_name": stage.name,
-                    "update": update,
-                    "status": "skip_low_valid",
-                    "valid_steps": total_valid,
-                    "valid_count": valid_count,
-                    "min_valid_count": min_valid_count,
-                    "decision": decision_max,
-                    "decision_limit": stage.decision_limit,
-                    "reward_mean": reward_mean,
-                    "loss": None,
-                    "episodes": rolling.get("episodes", 0.0),
-                    "metrics": rolling,
-                    "gate": gate,
-                })
+                append_jsonl(
+                    metrics_log_path,
+                    {
+                        "stage": stage_index,
+                        "stage_name": stage.name,
+                        "update": update,
+                        "status": "skip_low_valid",
+                        "valid_steps": total_valid,
+                        "valid_count": valid_count,
+                        "min_valid_count": min_valid_count,
+                        "decision": decision_max,
+                        "decision_limit": stage.decision_limit,
+                        "reward_mean": reward_mean,
+                        "loss": None,
+                        "episodes": rolling.get("episodes", 0.0),
+                        "metrics": rolling,
+                        "gate": gate,
+                    },
+                )
                 obs_now = env.reset()
-                state = model.initial_state(args.num_envs, device)
+                state = model.initial_state(cfg.num_envs, device)
                 continue
 
             if profile.use_lstm:
@@ -663,7 +571,7 @@ def main() -> int:
                     returns,
                     valids,
                     initial_state,
-                    args,
+                    cfg,
                 )
             else:
                 losses = ppo_update_mlp(
@@ -675,7 +583,7 @@ def main() -> int:
                     advantages,
                     returns,
                     valids,
-                    args,
+                    cfg,
                 )
 
             rolling = average_window(window)
@@ -683,16 +591,16 @@ def main() -> int:
             decision_max = int(env.steps.max().item())
             gate_ok = False
             display_streak = pass_streak
-            if summary_added and len(window) == args.advance_window:
+            if summary_added and len(window) == cfg.advance_window:
                 gate_ok, _ = advancement_satisfied(stage, rolling)
                 display_streak = pass_streak + 1 if gate_ok else 0
             gate = format_gate(
                 stage,
                 rolling,
                 len(window),
-                args.advance_window,
+                cfg.advance_window,
                 display_streak,
-                args.advance_patience,
+                cfg.advance_patience,
             )
             if not losses:
                 print(
@@ -710,26 +618,29 @@ def main() -> int:
                     ),
                     flush=True,
                 )
-                append_jsonl(metrics_log_path, {
-                    "stage": stage_index,
-                    "stage_name": stage.name,
-                    "update": update,
-                    "status": "skip_no_finite_minibatch",
-                    "valid_steps": total_valid,
-                    "valid_count": valid_count,
-                    "decision": decision_max,
-                    "decision_limit": stage.decision_limit,
-                    "reward_mean": reward_mean,
-                    "loss": None,
-                    "episodes": rolling.get("episodes", 0.0),
-                    "metrics": rolling,
-                    "gate": gate,
-                })
+                append_jsonl(
+                    metrics_log_path,
+                    {
+                        "stage": stage_index,
+                        "stage_name": stage.name,
+                        "update": update,
+                        "status": "skip_no_finite_minibatch",
+                        "valid_steps": total_valid,
+                        "valid_count": valid_count,
+                        "decision": decision_max,
+                        "decision_limit": stage.decision_limit,
+                        "reward_mean": reward_mean,
+                        "loss": None,
+                        "episodes": rolling.get("episodes", 0.0),
+                        "metrics": rolling,
+                        "gate": gate,
+                    },
+                )
                 obs_now = env.reset()
-                state = model.initial_state(args.num_envs, device)
+                state = model.initial_state(cfg.num_envs, device)
                 continue
             loss_mean = torch.stack(losses).mean().item()
-            if update % max(1, int(args.log_interval)) == 0 or summary_added:
+            if update % max(1, int(cfg.log_interval)) == 0 or summary_added:
                 print(
                     format_training_line(
                         stage_index=stage_index,
@@ -744,45 +655,48 @@ def main() -> int:
                     ),
                     flush=True,
                 )
-            append_jsonl(metrics_log_path, {
-                "stage": stage_index,
-                "stage_name": stage.name,
-                "update": update,
-                "status": "running",
-                "valid_steps": total_valid,
-                "valid_count": valid_count,
-                "decision": decision_max,
-                "decision_limit": stage.decision_limit,
-                "reward_mean": reward_mean,
-                "loss": loss_mean,
-                "episodes": rolling.get("episodes", 0.0),
-                "metrics": rolling,
-                "gate": gate,
-                "summary_added": summary_added,
-                "pass_streak": display_streak,
-            })
+            append_jsonl(
+                metrics_log_path,
+                {
+                    "stage": stage_index,
+                    "stage_name": stage.name,
+                    "update": update,
+                    "status": "running",
+                    "valid_steps": total_valid,
+                    "valid_count": valid_count,
+                    "decision": decision_max,
+                    "decision_limit": stage.decision_limit,
+                    "reward_mean": reward_mean,
+                    "loss": loss_mean,
+                    "episodes": rolling.get("episodes", 0.0),
+                    "metrics": rolling,
+                    "gate": gate,
+                    "summary_added": summary_added,
+                    "pass_streak": display_streak,
+                },
+            )
 
             if env.all_inactive():
                 obs_now = env.reset()
-                state = model.initial_state(args.num_envs, device)
+                state = model.initial_state(cfg.num_envs, device)
 
-            if update % args.checkpoint_interval == 0:
+            if update % cfg.checkpoint_interval == 0:
                 save_checkpoint(
                     stage_dir / "checkpoint.pt",
                     model=model,
                     stage=stage,
                     stage_update=update,
                     total_valid_steps=total_valid,
-                    args=args,
+                    cfg=cfg,
                     metrics=rolling,
                     status="running",
                 )
 
-            if not args.no_auto_advance and summary_added and len(window) == args.advance_window:
+            if not cfg.no_auto_advance and summary_added and len(window) == cfg.advance_window:
                 ok, reason = advancement_satisfied(stage, rolling)
                 pass_streak = pass_streak + 1 if ok else 0
                 if ok:
-                    if pass_streak < max(1, args.advance_patience):
+                    if pass_streak < max(1, cfg.advance_patience):
                         continue
                     advanced = True
                     save_checkpoint(
@@ -791,7 +705,7 @@ def main() -> int:
                         stage=stage,
                         stage_update=update,
                         total_valid_steps=total_valid,
-                        args=args,
+                        cfg=cfg,
                         metrics=rolling,
                         status="advanced",
                     )
@@ -818,9 +732,9 @@ def main() -> int:
                 stage_dir / "final_checkpoint.pt",
                 model=model,
                 stage=stage,
-                stage_update=args.max_updates_per_stage,
+                stage_update=cfg.max_updates_per_stage,
                 total_valid_steps=total_valid,
-                args=args,
+                cfg=cfg,
                 metrics=rolling,
                 status="stalled",
             )
@@ -828,7 +742,7 @@ def main() -> int:
                 {
                     "stage": stage_index,
                     "name": stage.name,
-                    "update": args.max_updates_per_stage,
+                    "update": cfg.max_updates_per_stage,
                     "status": "stalled",
                     "metrics": rolling,
                 }

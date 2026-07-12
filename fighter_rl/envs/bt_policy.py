@@ -16,10 +16,8 @@ The Windows DLL cannot be called from thousands of GPU environments, so the
 tree is translated into vectorized Torch.  The public training target is just
 ``bt`` via ``bt_action``.
 """
-from __future__ import annotations
 
 import torch
-
 
 MODE_PURE = 0
 MODE_LEAD = 1
@@ -52,25 +50,25 @@ MODE_LABELS = {
 }
 
 
-def _unit(v: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+def _unit(v, eps=1e-6):
     return v / v.norm(dim=1, keepdim=True).clamp_min(eps)
 
 
-def _angle_deg(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def _angle_deg(a, b):
     denom = a.norm(dim=1).clamp_min(1e-6) * b.norm(dim=1).clamp_min(1e-6)
     c = (a * b).sum(1) / denom
     return torch.rad2deg(torch.acos(c.clamp(-1.0, 1.0)))
 
 
-def _cross(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def _cross(a, b):
     return torch.linalg.cross(a, b, dim=1)
 
 
-def _pos_alt_up(obs41: torch.Tensor) -> torch.Tensor:
+def _pos_alt_up(obs41):
     return torch.stack((obs41[:, 0], obs41[:, 1], -obs41[:, 2]), 1)
 
 
-def _uvw_ned(obs41: torch.Tensor) -> torch.Tensor:
+def _uvw_ned(obs41):
     """Convert body-axis velocity columns [u, v, w] to local NED m/s."""
     phi = torch.deg2rad(obs41[:, 3])
     theta = torch.deg2rad(obs41[:, 4])
@@ -89,7 +87,7 @@ def _uvw_ned(obs41: torch.Tensor) -> torch.Tensor:
     )
 
 
-def _bt_forward_up_right(obs41: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _bt_forward_up_right(obs41):
     """Return the C++ BT forward/up/right vectors in [north, east, altitude-up].
 
     This intentionally mirrors ``DirectionVectorUpdate.cpp`` and
@@ -139,7 +137,7 @@ def _bt_forward_up_right(obs41: torch.Tensor) -> tuple[torch.Tensor, torch.Tenso
     return _unit(forward), _unit(up), _unit(right)
 
 
-def make_bt_state(num_envs: int, device: torch.device | str, dtype: torch.dtype = torch.float32) -> dict[str, torch.Tensor]:
+def make_bt_state(num_envs, device, dtype=torch.float32):
     """Create mutable BT state for cooldown/current-task behavior."""
     device = torch.device(device)
     return {
@@ -151,7 +149,7 @@ def make_bt_state(num_envs: int, device: torch.device | str, dtype: torch.dtype 
     }
 
 
-def _geometry(my_obs41: torch.Tensor, target_obs41: torch.Tensor) -> dict[str, torch.Tensor]:
+def _geometry(my_obs41, target_obs41):
     my_pos = _pos_alt_up(my_obs41)
     target_pos = _pos_alt_up(target_obs41)
     my_fwd, my_up, my_right = _bt_forward_up_right(my_obs41)
@@ -192,14 +190,14 @@ def _geometry(my_obs41: torch.Tensor, target_obs41: torch.Tensor) -> dict[str, t
 
 
 def _cooldown_ok(
-    state: dict[str, torch.Tensor] | None,
-    previous_mode: torch.Tensor,
-    now: torch.Tensor,
-    maneuver_mode: int,
-    last_key: str,
-    cooldown_s: float,
-    urgent: torch.Tensor | None = None,
-) -> torch.Tensor:
+    state,
+    previous_mode,
+    now,
+    maneuver_mode,
+    last_key,
+    cooldown_s,
+    urgent=None,
+):
     if state is None:
         return torch.ones_like(previous_mode, dtype=torch.bool)
     current = previous_mode == int(maneuver_mode)
@@ -210,55 +208,78 @@ def _cooldown_ok(
     return current | urgent | never_used | (elapsed >= float(cooldown_s))
 
 
-def _lead_vp(g: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+def _lead_vp(g):
     lead_distance = 0.25 * g["distance"] + 0.4 * g["target_speed"]
     lead_distance = torch.where(g["los"] > 20.0, lead_distance * 1.3, lead_distance)
     lead_distance = torch.where(g["los"] < 5.0, lead_distance * 0.8, lead_distance)
     lead_distance = lead_distance.clamp(500.0, 2000.0)
-    return g["target_pos"] + g["target_fwd"] * lead_distance[:, None], torch.full_like(g["distance"], MODE_LEAD, dtype=torch.long)
+    return g["target_pos"] + g["target_fwd"] * lead_distance[:, None], torch.full_like(
+        g["distance"], MODE_LEAD, dtype=torch.long
+    )
 
 
-def _lag_vp(g: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+def _lag_vp(g):
     lag_distance = 0.20 * g["distance"] + 0.30 * g["target_speed"]
     close = g["distance"] < 500.0
     lag_distance = torch.where(close, torch.full_like(lag_distance, 1500.0), lag_distance)
     lag_distance = torch.where(g["los"] > 20.0, lag_distance * 1.2, lag_distance)
     lag_distance = torch.where(g["los"] < 5.0, lag_distance * 0.8, lag_distance)
     lag_distance = lag_distance.clamp(300.0, 1800.0)
-    mode = torch.where(close, torch.full_like(g["distance"], MODE_LAG_CLOSE, dtype=torch.long), torch.full_like(g["distance"], MODE_LAG, dtype=torch.long))
+    mode = torch.where(
+        close,
+        torch.full_like(g["distance"], MODE_LAG_CLOSE, dtype=torch.long),
+        torch.full_like(g["distance"], MODE_LAG, dtype=torch.long),
+    )
     return g["target_pos"] - g["target_fwd"] * lag_distance[:, None], mode
 
 
-def _pure_vp(g: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+def _pure_vp(g):
     return g["target_pos"], torch.full_like(g["distance"], MODE_PURE, dtype=torch.long)
 
 
-def _climb_vp(g: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+def _climb_vp(g):
     altitude_error = (900.0 - g["altitude"]).clamp(300.0, 1200.0)
     emergency = g["altitude"] < 400.0
-    forward_distance = torch.where(emergency, torch.full_like(g["distance"], 1200.0), torch.full_like(g["distance"], 1800.0))
-    vp = g["my_pos"] + g["my_fwd"] * forward_distance[:, None] + torch.stack(
-        (torch.zeros_like(altitude_error), torch.zeros_like(altitude_error), altitude_error),
-        1,
+    forward_distance = torch.where(
+        emergency, torch.full_like(g["distance"], 1200.0), torch.full_like(g["distance"], 1800.0)
     )
-    mode = torch.where(emergency, torch.full_like(g["distance"], MODE_CLIMB_EMERGENCY, dtype=torch.long), torch.full_like(g["distance"], MODE_RECOVER, dtype=torch.long))
+    vp = (
+        g["my_pos"]
+        + g["my_fwd"] * forward_distance[:, None]
+        + torch.stack(
+            (torch.zeros_like(altitude_error), torch.zeros_like(altitude_error), altitude_error),
+            1,
+        )
+    )
+    mode = torch.where(
+        emergency,
+        torch.full_like(g["distance"], MODE_CLIMB_EMERGENCY, dtype=torch.long),
+        torch.full_like(g["distance"], MODE_RECOVER, dtype=torch.long),
+    )
     return vp, mode
 
 
-def _break_vp(g: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+def _break_vp(g):
     direction = g["to_target"] / g["distance"][:, None].clamp_min(1e-6)
     right_comp = (direction * g["my_right"]).sum(1)
-    break_sign = torch.where(right_comp >= 0.0, torch.ones_like(right_comp), -torch.ones_like(right_comp))
-    vp = g["my_pos"] + g["my_fwd"] * 500.0 + g["my_right"] * (break_sign * 6000.0)[:, None] + g["my_up"] * 300.0
+    break_sign = torch.where(
+        right_comp >= 0.0, torch.ones_like(right_comp), -torch.ones_like(right_comp)
+    )
+    vp = (
+        g["my_pos"]
+        + g["my_fwd"] * 500.0
+        + g["my_right"] * (break_sign * 6000.0)[:, None]
+        + g["my_up"] * 300.0
+    )
     return vp, torch.full_like(g["distance"], MODE_BREAK, dtype=torch.long)
 
 
-def _high_yoyo_vp(g: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+def _high_yoyo_vp(g):
     vp = g["target_pos"] + g["target_up"] * 500.0 - g["target_fwd"] * 100.0
     return vp, torch.full_like(g["distance"], MODE_HIGH_YOYO, dtype=torch.long)
 
 
-def _barrel_roll_vp(g: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+def _barrel_roll_vp(g):
     rel = g["my_pos"] - g["target_pos"]
     fwd_comp = (rel * g["target_fwd"]).sum(1, keepdim=True)
     perp = rel - g["target_fwd"] * fwd_comp
@@ -271,25 +292,31 @@ def _barrel_roll_vp(g: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Ten
     return vp, torch.full_like(g["distance"], MODE_BARREL_ROLL, dtype=torch.long)
 
 
-def _extend_vp(g: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-    return g["my_pos"] + g["my_fwd"] * 10000.0, torch.full_like(g["distance"], MODE_EXTEND, dtype=torch.long)
+def _extend_vp(g):
+    return g["my_pos"] + g["my_fwd"] * 10000.0, torch.full_like(
+        g["distance"], MODE_EXTEND, dtype=torch.long
+    )
 
 
-def _low_yoyo_vp(g: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+def _low_yoyo_vp(g):
     dive_depth = torch.minimum(g["distance"] * 0.25, torch.full_like(g["distance"], 800.0))
     lead_dist = torch.minimum(g["distance"] * 0.25, torch.full_like(g["distance"], 1200.0))
-    vp = g["target_pos"] - g["target_up"] * dive_depth[:, None] + g["target_fwd"] * lead_dist[:, None]
+    vp = (
+        g["target_pos"]
+        - g["target_up"] * dive_depth[:, None]
+        + g["target_fwd"] * lead_dist[:, None]
+    )
     return vp, torch.full_like(g["distance"], MODE_LOW_YOYO, dtype=torch.long)
 
 
 def _apply_choice(
-    selected: torch.Tensor,
-    vp: torch.Tensor,
-    mode: torch.Tensor,
-    condition: torch.Tensor,
-    candidate_vp: torch.Tensor,
-    candidate_mode: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    selected,
+    vp,
+    mode,
+    condition,
+    candidate_vp,
+    candidate_mode,
+):
     take = (~selected) & condition
     vp = torch.where(take[:, None], candidate_vp, vp)
     mode = torch.where(take, candidate_mode, mode)
@@ -297,14 +324,14 @@ def _apply_choice(
 
 
 def inha_viper_virtual_point(
-    my_obs41: torch.Tensor,
-    target_obs41: torch.Tensor,
+    my_obs41,
+    target_obs41,
     *,
-    bt_state: dict[str, torch.Tensor] | None = None,
-    dt: float = 1.0 / 60.0,
-    active_mask: torch.Tensor | None = None,
-    **_: object,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    bt_state=None,
+    dt=1.0 / 60.0,
+    active_mask=None,
+    **_,
+):
     """Evaluate the INHA_VIPER selector and return VP plus diagnostic info."""
     g = _geometry(my_obs41, target_obs41)
     lag_vp, lag_mode = _lag_vp(g)
@@ -330,7 +357,9 @@ def inha_viper_virtual_point(
     now = previous_time + float(dt)
 
     climb_vp, climb_mode = _climb_vp(g)
-    selected, vp, mode = _apply_choice(selected, vp, mode, g["altitude"] < 600.0, climb_vp, climb_mode)
+    selected, vp, mode = _apply_choice(
+        selected, vp, mode, g["altitude"] < 600.0, climb_vp, climb_mode
+    )
 
     break_cond = (
         (g["distance"] <= 4000.0)
@@ -349,7 +378,9 @@ def inha_viper_virtual_point(
         & (g["aspect"] <= 80.0)
     )
     selected, vp, mode = _apply_choice(selected, vp, mode, weapon_cond, pure_vp, pure_mode)
-    selected, vp, mode = _apply_choice(selected, vp, mode, g["distance"] <= 914.0, pure_vp, pure_mode)
+    selected, vp, mode = _apply_choice(
+        selected, vp, mode, g["distance"] <= 914.0, pure_vp, pure_mode
+    )
 
     high_ok = _cooldown_ok(
         bt_state,
@@ -364,8 +395,12 @@ def inha_viper_virtual_point(
     high_vp, high_mode = _high_yoyo_vp(g)
     selected, vp, mode = _apply_choice(selected, vp, mode, high_cond, high_vp, high_mode)
 
-    barrel_ok = _cooldown_ok(bt_state, previous_mode, now, MODE_BARREL_ROLL, "last_barrel_roll", 8.0)
-    barrel_cond = barrel_ok & (g["distance"] <= 2000.0) & (g["distance"] >= 914.0) & (g["los"] >= 10.0)
+    barrel_ok = _cooldown_ok(
+        bt_state, previous_mode, now, MODE_BARREL_ROLL, "last_barrel_roll", 8.0
+    )
+    barrel_cond = (
+        barrel_ok & (g["distance"] <= 2000.0) & (g["distance"] >= 914.0) & (g["los"] >= 10.0)
+    )
     barrel_vp, barrel_mode = _barrel_roll_vp(g)
     selected, vp, mode = _apply_choice(selected, vp, mode, barrel_cond, barrel_vp, barrel_mode)
 
@@ -379,9 +414,13 @@ def inha_viper_virtual_point(
     selected, vp, mode = _apply_choice(selected, vp, mode, low_cond, low_vp, low_mode)
 
     lead_vp, lead_mode = _lead_vp(g)
-    selected, vp, mode = _apply_choice(selected, vp, mode, g["distance"] >= 3000.0, lead_vp, lead_mode)
+    selected, vp, mode = _apply_choice(
+        selected, vp, mode, g["distance"] >= 3000.0, lead_vp, lead_mode
+    )
     selected, vp, mode = _apply_choice(selected, vp, mode, g["los"] >= 15.0, lead_vp, lead_mode)
-    selected, vp, mode = _apply_choice(selected, vp, mode, g["angle_off"] >= 50.0, lead_vp, lead_mode)
+    selected, vp, mode = _apply_choice(
+        selected, vp, mode, g["angle_off"] >= 50.0, lead_vp, lead_mode
+    )
 
     if bt_state is not None:
         changed = active & (mode != previous_mode)
@@ -416,14 +455,14 @@ def inha_viper_virtual_point(
 
 
 def bt_virtual_point(
-    my_obs41: torch.Tensor,
-    target_obs41: torch.Tensor,
-    **kwargs: object,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    my_obs41,
+    target_obs41,
+    **kwargs,
+):
     return inha_viper_virtual_point(my_obs41, target_obs41, **kwargs)
 
 
-def bt_empty_virtual_point(my_obs41: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+def bt_empty_virtual_point(my_obs41):
     my_pos = _pos_alt_up(my_obs41)
     my_fwd, _, _ = _bt_forward_up_right(my_obs41)
     vp = my_pos + my_fwd * 10000.0
@@ -432,12 +471,12 @@ def bt_empty_virtual_point(my_obs41: torch.Tensor) -> tuple[torch.Tensor, dict[s
 
 
 def vp_to_action(
-    my_obs41: torch.Tensor,
-    vp: torch.Tensor,
+    my_obs41,
+    vp,
     *,
-    target_speed_mps: float | torch.Tensor = 280.0,
-    throttle: float | torch.Tensor = 1.0,
-) -> torch.Tensor:
+    target_speed_mps=280.0,
+    throttle=1.0,
+):
     """Convert a BT virtual point to roll/pitch/rudder/throttle.
 
     Roll, pitch, and rudder mirror the projection geometry in
@@ -477,7 +516,9 @@ def vp_to_action(
     error_effect = (los / 6.0).clamp(0.0, 1.5)
     roll_effect = 1.0 - (ut_deg.abs() / 90.0).clamp(0.0, 1.0)
     horizon_effect = torch.where(ut_deg.abs() <= 90.0, 1.0, 0.5)
-    pitch = torch.where(los < 90.0, -error_effect * roll_effect * horizon_effect, torch.full_like(los, -1.0))
+    pitch = torch.where(
+        los < 90.0, -error_effect * roll_effect * horizon_effect, torch.full_like(los, -1.0)
+    )
 
     a = torch.zeros(my_obs41.shape[0], 4, device=my_obs41.device, dtype=my_obs41.dtype)
     a[:, 0] = roll.clamp(-1.0, 1.0)
@@ -491,53 +532,57 @@ def vp_to_action(
 
 
 def point_los_to_action(
-    my_obs41: torch.Tensor,
-    vp_alt_up: torch.Tensor,
+    my_obs41,
+    vp_alt_up,
     *,
-    target_speed_mps: float | torch.Tensor = 270.0,
-) -> torch.Tensor:
+    target_speed_mps=270.0,
+):
     """Compatibility wrapper; INHA_VIPER uses VP-to-stick control."""
     return vp_to_action(my_obs41, vp_alt_up, target_speed_mps=target_speed_mps)
 
 
 def los_to_action(
-    my_obs41: torch.Tensor,
-    target_obs41: torch.Tensor,
+    my_obs41,
+    target_obs41,
     *,
-    target_speed_mps: float | torch.Tensor = 270.0,
-) -> torch.Tensor:
+    target_speed_mps=270.0,
+):
     return vp_to_action(my_obs41, _pos_alt_up(target_obs41), target_speed_mps=target_speed_mps)
 
 
 def inha_viper_action(
-    my_obs41: torch.Tensor,
-    target_obs41: torch.Tensor,
+    my_obs41,
+    target_obs41,
     *,
-    bt_state: dict[str, torch.Tensor] | None = None,
-    dt: float = 1.0 / 60.0,
-    active_mask: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    vp, info = inha_viper_virtual_point(my_obs41, target_obs41, bt_state=bt_state, dt=dt, active_mask=active_mask)
+    bt_state=None,
+    dt=1.0 / 60.0,
+    active_mask=None,
+):
+    vp, info = inha_viper_virtual_point(
+        my_obs41, target_obs41, bt_state=bt_state, dt=dt, active_mask=active_mask
+    )
     action = vp_to_action(my_obs41, vp, throttle=1.0)
     info["vp"] = vp
     return action, info
 
 
 def bt_action(
-    my_obs41: torch.Tensor,
-    target_obs41: torch.Tensor,
+    my_obs41,
+    target_obs41,
     *,
-    bt_state: dict[str, torch.Tensor] | None = None,
-    dt: float = 1.0 / 60.0,
-    active_mask: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    return inha_viper_action(my_obs41, target_obs41, bt_state=bt_state, dt=dt, active_mask=active_mask)
+    bt_state=None,
+    dt=1.0 / 60.0,
+    active_mask=None,
+):
+    return inha_viper_action(
+        my_obs41, target_obs41, bt_state=bt_state, dt=dt, active_mask=active_mask
+    )
 
 
 def bt_empty_action(
-    my_obs41: torch.Tensor,
-    target_obs41: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    my_obs41,
+    target_obs41=None,
+):
     del target_obs41
     vp, info = bt_empty_virtual_point(my_obs41)
     action = vp_to_action(my_obs41, vp, throttle=1.0)

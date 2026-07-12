@@ -2,17 +2,21 @@
 
 Minimal fast GPU training setup for the AIP dogfight policy.
 
+학습 코드 파일별 역할은 `TRAINING_CODE_MAP.md`에 정리되어 있다.
+
 ## What Is Here
 
-- `train_fast_aip_ppo.py` - PPO trainer.
-- `train_fast_aip_sac.py` - SAC trainer.
+- `fighter_rl/training/ppo.py` - PPO trainer.
+- `fighter_rl/training/sac.py` - SAC trainer.
 - `run_fast_aip_ppo_server.sh` - PPO launch wrapper.
 - `run_fast_aip_sac_server.sh` - SAC launch wrapper.
-- `fast_aip_policy.py` - PPO MLP/LSTM policy profiles.
-- `fast_aip_sac.py` - SAC MLP/LSTM actor/critic profiles.
-- `competition_loiter_env.py` - batched gun curriculum environment.
-- `competition_neuralplane/` - GPU-batched F-16 surrogate.
-- `loiter_gpu_stages.py` - curriculum stages and gates.
+- `configs/ppo_lstm.json` - PPO training config.
+- `configs/sac_lstm.json` - SAC training config.
+- `fighter_rl/models/ppo.py` - PPO MLP/LSTM policy profiles.
+- `fighter_rl/models/sac.py` - SAC MLP/LSTM actor/critic profiles.
+- `fighter_rl/envs/loiter.py` - batched gun curriculum environment.
+- `fighter_rl/sim/neuralplane/` - GPU-batched F-16 surrogate.
+- `fighter_rl/training/stages.py` - curriculum stages and gates.
 - `stock_runtime/` - aircraft/engine XML used by the trainer.
 
 ## Install
@@ -26,27 +30,32 @@ pip install -r requirements.txt
 ## PPO LSTM
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
-VARIANT=ppo_lstm \
-STAGE_SCHEDULE=gun_bucket_curriculum \
-TARGET_MANEUVER=gun_curriculum \
-OUTPUT=fast_aip_ppo_runs/bucket_gun_ppo_lstm \
 bash run_fast_aip_ppo_server.sh
 ```
+
+Edit `configs/ppo_lstm.json` to change PPO settings.
 
 ## SAC LSTM
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
-VARIANT=sac_lstm \
-STAGE_SCHEDULE=gun_bucket_curriculum \
-TARGET_MANEUVER=gun_curriculum \
-OUTPUT=fast_aip_sac_runs/bucket_gun_sac_lstm \
 bash run_fast_aip_sac_server.sh
 ```
 
+Edit `configs/sac_lstm.json` to change SAC settings.
+
 If two GPUs are available, run PPO with `CUDA_VISIBLE_DEVICES=0` and SAC with
 `CUDA_VISIBLE_DEVICES=1`.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash run_fast_aip_ppo_server.sh
+CUDA_VISIBLE_DEVICES=1 bash run_fast_aip_sac_server.sh
+```
+
+To use another config file:
+
+```bash
+CONFIG=configs/ppo_lstm.json bash run_fast_aip_ppo_server.sh
+```
 
 ## Variants
 
