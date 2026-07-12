@@ -12,3 +12,4 @@ torch>=2.6; platform_system != "Linux" or python_version >= "3.13"
 gymnasium>=1.0,<2.0
 PyYAML>=6.0,<7.0
 ray[rllib]>=2.9,<3.0
+jupyterlab>=4.0,<5.0

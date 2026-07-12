@@ -36,6 +36,15 @@ python run_fast_aip_ppo_server.py
 
 Edit `configs/ppo_lstm.json` to change PPO settings.
 
+To run the same trainer interactively in Jupyter, open
+`run_fast_aip_ppo_server.ipynb` with the project's Python environment and run
+the cells from top to bottom. The training cell streams the normal launcher
+logs and can be stopped with **Interrupt Kernel**.
+
+```bash
+.venv/bin/python -m jupyter lab run_fast_aip_ppo_server.ipynb
+```
+
 ## SAC LSTM
 
 ```bash
