@@ -1,13 +1,13 @@
 ---
 name: clean-code
-description: Apply the clean-code Python readability style when editing this repository, especially after removing type hints, reorganizing training modules, cleaning dense numerical/vectorized code, fixing cramped blank-line layout, or fixing ugly Black line breaks. Use for requests about making code less cramped, keeping short calls on one line, splitting genuinely long calls vertically, introducing local helpers for repeated long argument groups, removing top-of-file module docstrings, preserving __all__, and keeping training/simulation code readable without changing behavior.
+description: Apply the clean-code Python readability style when writing or editing code in this repository, including new feature work, refactors, training-module changes, simulation/env changes, dense numerical/vectorized code, JSON config code, and cleanup after removing type hints. Use for requests about implementing Python code, making code less cramped, keeping short calls on one line, splitting genuinely long calls vertically, introducing local helpers for repeated long argument groups, fixing ugly Black line breaks, removing top-of-file module docstrings, preserving __all__, and keeping training/simulation code readable without changing behavior.
 ---
 
 # Clean Code
 
 ## Style Rules
 
-Use this style when editing `fighter_rl/**/*.py`.
+Use this style when writing or editing `fighter_rl/**/*.py`.
 
 - Do not add top-of-file module docstrings such as `"""Shared utilities."""`.
 - Keep public package exports explicit with `__all__` in every `__init__.py`.

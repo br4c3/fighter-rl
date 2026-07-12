@@ -1,4 +1,4 @@
 interface:
   display_name: "Clean Code"
-  short_description: "Apply the project clean-code style."
-  default_prompt: "Apply the clean-code Python readability style to this code."
+  short_description: "Use the project clean-code style when writing Python."
+  default_prompt: "Write or edit this code using the clean-code Python readability style."
