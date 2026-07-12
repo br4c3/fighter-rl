@@ -429,18 +429,19 @@ def main():
             done = torch.stack(done_buf)
             valid = torch.stack(valid_buf).bool()
 
-            summary = env.pop_completed_summary()
-            summary_added = False
-
-            if summary:
-                window.append(summary)
-                summary_added = True
-
             valid_count = int(valid.sum().item())
             total_valid += valid_count
 
             min_valid_count = max(2, int(valid.numel() * max(0.0, float(cfg.min_valid_fraction))))
             low_valid = valid_count < min_valid_count
+            batch_complete = env.all_inactive() or low_valid
+
+            summary = env.pop_completed_summary() if batch_complete else None
+            summary_added = False
+
+            if summary:
+                window.append(summary)
+                summary_added = True
 
             if not low_valid:
                 replay.add(
@@ -534,6 +535,7 @@ def main():
                     "metrics": rolling,
                     "gate": gate,
                     "summary_added": summary_added,
+                    "batch_complete": batch_complete,
                     "pass_streak": display_streak,
                 },
             )
@@ -541,6 +543,44 @@ def main():
             if low_valid:
                 obs_now = env.reset()
                 state = actor.initial_state(cfg.num_envs, device)
+
+                if not cfg.no_auto_advance and summary_added and len(window) == cfg.advance_window:
+                    ok, reason = advancement_satisfied(stage, rolling)
+                    pass_streak = pass_streak + 1 if ok else 0
+
+                    if ok and pass_streak >= max(1, cfg.advance_patience):
+                        advanced = True
+                        save_checkpoint(
+                            stage_dir / "final_checkpoint.pt",
+                            actor=actor,
+                            q1=q1,
+                            q2=q2,
+                            target_q1=target_q1,
+                            target_q2=target_q2,
+                            log_alpha=log_alpha,
+                            stage=stage,
+                            stage_update=update,
+                            total_valid_steps=total_valid,
+                            cfg=cfg,
+                            metrics=rolling,
+                            status="advanced",
+                        )
+                        curriculum_log.append(
+                            {
+                                "stage": stage_index,
+                                "name": stage.name,
+                                "update": update,
+                                "status": "advanced",
+                                "reason": reason,
+                                "metrics": rolling,
+                            }
+                        )
+                        (run / "curriculum_state.json").write_text(
+                            json.dumps(curriculum_log, indent=2), encoding="utf-8"
+                        )
+                        print(f"[advance] stage={stage_index} {reason}", flush=True)
+                        break
+
                 continue
 
             if env.all_inactive():

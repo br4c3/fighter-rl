@@ -549,6 +549,28 @@ def _nose_bridge_reward(*, trail_m=760.0, phi_scale=0.070, inner_soft_m=305.0):
     return reward
 
 
+def _gun_aim_bridge_reward(*, phi_scale, inner_soft_m, aim_scale):
+    """Keep a small absolute aim signal while transitioning to gun rewards.
+
+    The nose-on bridge uses a comparatively strong absolute aim reward.  Going
+    straight to pure damage/dwell/phi feedback makes the first gun stages prone
+    to losing the sight picture before sparse damage feedback can reinforce it.
+    This helper preserves the normal gun reward and only adds a progressively
+    weaker aim term; later stages return to the unmodified gun reward.
+    """
+    reward = _gun_reward(phi_scale=phi_scale, inner_soft_m=inner_soft_m)
+    reward.update(
+        {
+            "aim_scale": float(aim_scale),
+            "aim_sigma_deg": 2.5,
+            "aim_range_center_m": 650.0,
+            "aim_range_sigma_m": 400.0,
+        }
+    )
+
+    return reward
+
+
 def _gun_target_mix(*items):
     total = sum(float(weight) for _, weight in items)
 
@@ -1777,6 +1799,9 @@ def _with_bucket_gun_curriculum():
             own_pitch_jitter=0.05,
             easy_fraction=0.65,
             boundary_fraction=0.02,
+            reward_override=_gun_aim_bridge_reward(
+                phi_scale=0.110, inner_soft_m=310.0, aim_scale=0.025
+            ),
             bucket_mix=[
                 _bucket(
                     "perfect_wez",
@@ -1844,6 +1869,9 @@ def _with_bucket_gun_curriculum():
             own_pitch_jitter=0.08,
             easy_fraction=0.45,
             boundary_fraction=0.10,
+            reward_override=_gun_aim_bridge_reward(
+                phi_scale=0.090, inner_soft_m=285.0, aim_scale=0.015
+            ),
             bucket_mix=[
                 _bucket(
                     "center_wez",
@@ -1916,6 +1944,9 @@ def _with_bucket_gun_curriculum():
             own_pitch_jitter=0.22,
             easy_fraction=0.35,
             boundary_fraction=0.10,
+            reward_override=_gun_aim_bridge_reward(
+                phi_scale=0.075, inner_soft_m=285.0, aim_scale=0.008
+            ),
             bucket_mix=[
                 _bucket(
                     "already_wez",

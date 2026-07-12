@@ -18,11 +18,10 @@ def average_window(window):
     if not window:
         return {}
 
-    # Each item in ``window`` is not a raw log line.  It is an episodic summary
-    # emitted by CompetitionLoiterCurriculumEnv.pop_completed_summary(), and it
-    # may represent anything from a handful of completed episodes to a whole
-    # 4096-env batch.  Therefore the rolling curriculum metrics must be
-    # episode-weighted, not "one summary chunk == one vote".
+    # Each item in ``window`` is one synchronous rollout-batch summary emitted
+    # after every environment in the batch is inactive, or after low-valid tail
+    # cleanup forces a batch reset.  Batches may still contain different episode
+    # counts, so rolling curriculum metrics must be episode-weighted.
     weights = [max(0.0, float(item.get("episodes", 0.0))) for item in window]
     total_weight = sum(weights)
     keys = set().union(*(item.keys() for item in window))
@@ -517,13 +516,6 @@ def main():
                 if env.all_inactive():
                     break
 
-            summary = env.pop_completed_summary()
-            summary_added = False
-
-            if summary:
-                window.append(summary)
-                summary_added = True
-
             obs = torch.stack(obs_buf)
             raw = torch.stack(raw_buf)
             old_logp = torch.stack(logp_buf)
@@ -556,17 +548,33 @@ def main():
                 2,
                 int(valids.numel() * max(0.0, float(cfg.min_valid_fraction))),
             )
+            low_valid = valid_count < min_valid_count
+            batch_complete = env.all_inactive() or low_valid
 
-            if valid_count < min_valid_count:
+            summary = env.pop_completed_summary() if batch_complete else None
+            summary_added = False
+
+            if summary:
+                window.append(summary)
+                summary_added = True
+
+            if low_valid:
                 rolling = average_window(window)
                 reward_mean = rewards[valids].mean().item() if valid_count else float("nan")
                 decision_max = int(env.steps.max().item())
+                gate_ok = False
+                display_streak = pass_streak
+
+                if summary_added and len(window) == cfg.advance_window:
+                    gate_ok, _ = advancement_satisfied(stage, rolling)
+                    display_streak = pass_streak + 1 if gate_ok else 0
+
                 gate = format_gate(
                     stage,
                     rolling,
                     len(window),
                     cfg.advance_window,
-                    pass_streak,
+                    display_streak,
                     cfg.advance_patience,
                 )
                 print(
@@ -601,11 +609,46 @@ def main():
                         "episodes": rolling.get("episodes", 0.0),
                         "metrics": rolling,
                         "gate": gate,
+                        "summary_added": summary_added,
+                        "batch_complete": batch_complete,
                     },
                 )
 
                 obs_now = env.reset()
                 state = model.initial_state(cfg.num_envs, device)
+
+                if not cfg.no_auto_advance and summary_added and len(window) == cfg.advance_window:
+                    ok, reason = advancement_satisfied(stage, rolling)
+                    pass_streak = pass_streak + 1 if ok else 0
+
+                    if ok and pass_streak >= max(1, cfg.advance_patience):
+                        advanced = True
+                        save_checkpoint(
+                            stage_dir / "final_checkpoint.pt",
+                            model=model,
+                            stage=stage,
+                            stage_update=update,
+                            total_valid_steps=total_valid,
+                            cfg=cfg,
+                            metrics=rolling,
+                            status="advanced",
+                        )
+                        curriculum_log.append(
+                            {
+                                "stage": stage_index,
+                                "name": stage.name,
+                                "update": update,
+                                "status": "advanced",
+                                "reason": reason,
+                                "metrics": rolling,
+                            }
+                        )
+                        (run / "curriculum_state.json").write_text(
+                            json.dumps(curriculum_log, indent=2),
+                            encoding="utf-8",
+                        )
+                        print(f"[advance] stage={stage_index} {reason}", flush=True)
+                        break
 
                 continue
 
@@ -728,6 +771,7 @@ def main():
                     "metrics": rolling,
                     "gate": gate,
                     "summary_added": summary_added,
+                    "batch_complete": batch_complete,
                     "pass_streak": display_streak,
                 },
             )
