@@ -9,8 +9,8 @@ Minimal fast GPU training setup for the AIP dogfight policy.
 
 - `fighter_rl/training/ppo.py` - PPO trainer.
 - `fighter_rl/training/sac.py` - SAC trainer.
-- `run_fast_aip_ppo_server.py` - PPO launch wrapper.
-- `run_fast_aip_sac_server.py` - SAC launch wrapper.
+- `run_fast_aip_ppo_server.ipynb` - PPO Jupyter launcher.
+- `run_fast_aip_sac_server.ipynb` - SAC Jupyter launcher.
 - `configs/ppo_lstm.json` - PPO training config.
 - `configs/sac_lstm.json` - SAC training config.
 - `fighter_rl/models/ppo.py` - PPO MLP/LSTM policy profiles.
@@ -30,16 +30,12 @@ pip install -r requirements.txt
 
 ## PPO LSTM
 
-```bash
-python run_fast_aip_ppo_server.py
-```
-
 Edit `configs/ppo_lstm.json` to change PPO settings.
 
-To run the same trainer interactively in Jupyter, open
+To run the trainer interactively in Jupyter, open
 `run_fast_aip_ppo_server.ipynb` with the project's Python environment and run
-the cells from top to bottom. The training cell streams the normal launcher
-logs and can be stopped with **Interrupt Kernel**.
+the cells from top to bottom. The training cell streams logs and can be stopped
+with **Interrupt Kernel**.
 
 ```bash
 .venv/bin/python -m jupyter lab run_fast_aip_ppo_server.ipynb
@@ -47,25 +43,24 @@ logs and can be stopped with **Interrupt Kernel**.
 
 ## SAC LSTM
 
-```bash
-python run_fast_aip_sac_server.py
-```
-
 Edit `configs/sac_lstm.json` to change SAC settings.
+
+To run SAC interactively in Jupyter, open `run_fast_aip_sac_server.ipynb` and
+run the cells from top to bottom.
+
+```bash
+.venv/bin/python -m jupyter lab run_fast_aip_sac_server.ipynb
+```
 
 If two GPUs are available, run PPO with `CUDA_VISIBLE_DEVICES=0` and SAC with
 `CUDA_VISIBLE_DEVICES=1`.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python run_fast_aip_ppo_server.py
-CUDA_VISIBLE_DEVICES=1 python run_fast_aip_sac_server.py
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m jupyter lab run_fast_aip_ppo_server.ipynb
+CUDA_VISIBLE_DEVICES=1 .venv/bin/python -m jupyter lab run_fast_aip_sac_server.ipynb
 ```
 
-To use another config file:
-
-```bash
-CONFIG=configs/ppo_lstm.json python run_fast_aip_ppo_server.py
-```
+To use another config file, change `CONFIG_PATH` in the notebook setup cell.
 
 ## Variants
 
