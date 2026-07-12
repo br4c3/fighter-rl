@@ -562,6 +562,37 @@ def _bucket(name, weight, **kwargs):
     return out
 
 
+CLOSE_RANGE_MIN_M = 260.0
+CLOSE_RANGE_MAX_M = 1500.0
+CLOSE_RANGE_OUTER_SPAN_M = 400.0
+
+
+def _close_distance_range(value):
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return value
+
+    lo, hi = float(value[0]), float(value[1])
+
+    if hi <= CLOSE_RANGE_MAX_M:
+        return [max(CLOSE_RANGE_MIN_M, lo), max(CLOSE_RANGE_MIN_M, hi)]
+
+    if lo >= CLOSE_RANGE_MAX_M:
+        return [CLOSE_RANGE_MAX_M - CLOSE_RANGE_OUTER_SPAN_M, CLOSE_RANGE_MAX_M]
+
+    return [max(CLOSE_RANGE_MIN_M, lo), CLOSE_RANGE_MAX_M]
+
+
+def _close_range_stage(stage):
+    target = copy.deepcopy(stage.target_randomization)
+    target["distance_m"] = _close_distance_range(target.get("distance_m"))
+
+    for bucket in target.get("bucket_mix", []):
+        if "distance_m" in bucket:
+            bucket["distance_m"] = _close_distance_range(bucket["distance_m"])
+
+    return _stage_copy(stage, index=stage.index, target_randomization=target)
+
+
 def _gun_stage(
     index,
     name,
@@ -2447,7 +2478,9 @@ def _with_bucket_gun_curriculum():
         ),
     ]
 
-    return [_stage_copy(stage, index=i) for i, stage in enumerate(stages)]
+    close_stages = [_close_range_stage(stage) for stage in stages]
+
+    return [_stage_copy(stage, index=i) for i, stage in enumerate(close_stages)]
 
 
 def load_stages(stage_dir=None, schedule=None):

@@ -27,6 +27,7 @@ configs/*.json
 | `fighter_rl/sim/neuralplane/` | GPU batch 비행 surrogate. |
 | `fighter_rl/utils/` | config loading, experiment manifest/log 기록. |
 | `stock_runtime/` | surrogate가 읽는 F-16/F100 XML runtime 데이터. |
+| `REWARD_GUIDE.md` | 현재 reward 구성과 stage별 보상 의도. |
 
 ## 실행 파일
 

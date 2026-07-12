@@ -6,7 +6,9 @@ scipy>=1.10,<1.16; python_version < "3.11"
 scipy>=1.16; python_version >= "3.11"
 filelock>=3.13
 pymap3d>=3.0
-torch>=2.0
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121; platform_system == "Linux" and python_version < "3.13"
+torch>=2.6; platform_system != "Linux" or python_version >= "3.13"
 gymnasium>=1.0,<2.0
 PyYAML>=6.0,<7.0
 ray[rllib]>=2.9,<3.0

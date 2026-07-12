@@ -3,6 +3,7 @@
 Minimal fast GPU training setup for the AIP dogfight policy.
 
 학습 코드 파일별 역할은 `TRAINING_CODE_MAP.md`에 정리되어 있다.
+현재 reward/curriculum 구성은 `REWARD_GUIDE.md`에 정리되어 있다.
 
 ## What Is Here
 
