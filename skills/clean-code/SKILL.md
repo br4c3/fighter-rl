@@ -92,6 +92,14 @@ Insert blank lines between logical groups, not mechanically after every line.
   around `+` and `-` to separate terms, for example
   `u*ct*cs + v*(sp*st*cs - cp*ss)`. Wrap those blocks with `# fmt: off`
   and `# fmt: on` so Black does not undo the formula layout.
+- For coordinate, state, observation, action, and vector component indexing,
+  force compact tensor subscripts inside the same `# fmt: off` block as the
+  formula: write `x[:,2]`, `state[:,:3]`, `obs[:,27]`, `a[:,0]`, and
+  `history[:,None,:]`. This rule is only for tensor subscripts that identify
+  vector/component axes.
+- Do not remove spaces from ordinary function argument commas. Keep calls such
+  as `clamp(-1, 1)`, `torch.where(mask, a, b)`, and config/list literals in
+  normal Black style.
 - In training loops, separate:
   - batch extraction
   - early exits
@@ -112,6 +120,16 @@ Insert blank lines between logical groups, not mechanically after every line.
   - reward components
   - done/valid masks
   - info dictionaries
+- In environment constructors and reset methods, separate:
+  - scalar configuration assignments
+  - simulator/object construction
+  - state tensors and counters
+  - random ownship samples
+  - random target samples
+  - reset calls
+  - position/state placement
+  - model randomization
+  - per-episode counters and health resets
 - In curriculum sampling helpers, separate:
   - config extraction
   - probability/fraction clamping
@@ -153,5 +171,9 @@ After style edits, run:
 .venv/bin/python -m black --check fighter_rl
 env PYTHONPYCACHEPREFIX=/tmp/fighter_rl_pycache .venv/bin/python -m py_compile $(find fighter_rl -name '*.py' -print)
 ```
+
+Also scan dense math manually after Black passes. Black cannot verify the
+project's multiplication/division readability rule because those blocks are
+intentionally guarded by `# fmt: off`.
 
 For training-facing edits, also run the preflight config used in this repo when available.

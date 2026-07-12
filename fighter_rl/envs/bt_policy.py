@@ -47,20 +47,23 @@ def _cross(a, b):
 
 
 def _pos_alt_up(obs41):
-    return torch.stack((obs41[:, 0], obs41[:, 1], -obs41[:, 2]), 1)
+    # fmt: off
+    return torch.stack((obs41[:,0], obs41[:,1], -obs41[:,2]), 1)
+    # fmt: on
 
 
 def _uvw_ned(obs41):
     """Convert body-axis velocity columns [u, v, w] to local NED m/s."""
-    phi = torch.deg2rad(obs41[:, 3])
-    theta = torch.deg2rad(obs41[:, 4])
-    psi = torch.deg2rad(obs41[:, 5])
-    u, v, w = obs41[:, 6], obs41[:, 7], obs41[:, 8]
+    # fmt: off
+    phi = torch.deg2rad(obs41[:,3])
+    theta = torch.deg2rad(obs41[:,4])
+    psi = torch.deg2rad(obs41[:,5])
+    u, v, w = obs41[:,6], obs41[:,7], obs41[:,8]
+
     sp, cp = torch.sin(phi), torch.cos(phi)
     st, ct = torch.sin(theta), torch.cos(theta)
     ss, cs = torch.sin(psi), torch.cos(psi)
 
-    # fmt: off
     return torch.stack((
         u*ct*cs + v*(sp*st*cs - cp*ss) + w*(cp*st*cs + sp*ss),
         u*ct*ss + v*(sp*st*ss + cp*cs) + w*(cp*st*ss - sp*cs),
@@ -75,47 +78,49 @@ def _bt_forward_up_right(obs41):
     This intentionally mirrors ``DirectionVectorUpdate.cpp`` and
     ``Controller_CY.cpp`` instead of using a cleaner rotation-matrix helper.
     """
-    yaw = torch.deg2rad(obs41[:, 5])
-    pitch = torch.deg2rad(obs41[:, 4])
-    roll = torch.deg2rad(obs41[:, 3])
+    # fmt: off
+    yaw = torch.deg2rad(obs41[:,5])
+    pitch = torch.deg2rad(obs41[:,4])
+    roll = torch.deg2rad(obs41[:,3])
 
-    c1, s1 = torch.cos(yaw / 2.0), torch.sin(yaw / 2.0)
-    c2, s2 = torch.cos(pitch / 2.0), torch.sin(pitch / 2.0)
-    c3, s3 = torch.cos(roll / 2.0), torch.sin(roll / 2.0)
-    c1c2 = c1 * c2
-    s1s2 = s1 * s2
+    c1, s1 = torch.cos(yaw/2.0), torch.sin(yaw/2.0)
+    c2, s2 = torch.cos(pitch/2.0), torch.sin(pitch/2.0)
+    c3, s3 = torch.cos(roll/2.0), torch.sin(roll/2.0)
+    c1c2 = c1*c2
+    s1s2 = s1*s2
 
-    qw = c1c2 * c3 + s1s2 * s3
-    qx = c1 * s2 * c3 + s1 * c2 * s3
-    qy = s1 * c2 * c3 - c1 * s2 * s3
-    qz = c1 * c2 * s3 - s1 * s2 * c3
-    qn = torch.sqrt(qw * qw + qx * qx + qy * qy + qz * qz).clamp_min(1e-9)
-    qw, qx, qy, qz = qw / qn, qx / qn, qy / qn, qz / qn
+    qw = c1c2*c3 + s1s2*s3
+    qx = c1*s2*c3 + s1*c2*s3
+    qy = s1*c2*c3 - c1*s2*s3
+    qz = c1*c2*s3 - s1*s2*c3
+    qn = torch.sqrt(qw*qw + qx*qx + qy*qy + qz*qz).clamp_min(1e-9)
+    qw, qx, qy, qz = qw/qn, qx/qn, qy/qn, qz/qn
 
     forward = torch.stack(
         (
-            1.0 - 2.0 * (qx * qx + qy * qy),
-            2.0 * (qx * qz + qw * qy),
-            -2.0 * (qy * qz - qw * qx),
+            1.0 - 2.0*(qx*qx + qy*qy),
+            2.0*(qx*qz + qw*qy),
+            -2.0*(qy*qz - qw*qx),
         ),
         1,
     )
     up = torch.stack(
         (
-            -2.0 * (qy * qz + qw * qx),
-            -2.0 * (qx * qy - qw * qz),
-            1.0 - 2.0 * (qx * qx + qz * qz),
+            -2.0*(qy*qz + qw*qx),
+            -2.0*(qx*qy - qw*qz),
+            1.0 - 2.0*(qx*qx + qz*qz),
         ),
         1,
     )
     right = torch.stack(
         (
-            2.0 * (qx * qz - qw * qy),
-            1.0 - 2.0 * (qy * qy + qz * qz),
-            -2.0 * (qx * qy + qw * qz),
+            2.0*(qx*qz - qw*qy),
+            1.0 - 2.0*(qy*qy + qz*qz),
+            -2.0*(qx*qy + qw*qz),
         ),
         1,
     )
+    # fmt: on
 
     return _unit(forward), _unit(up), _unit(right)
 
@@ -141,14 +146,18 @@ def _geometry(my_obs41, target_obs41):
 
     to_target = target_pos - my_pos
     distance = to_target.norm(dim=1).clamp_min(1e-6)
-    to_target_u = to_target / distance[:, None]
+    # fmt: off
+    to_target_u = to_target/distance[:,None]
+    # fmt: on
     los = _angle_deg(my_fwd, to_target_u)
     target_los = _angle_deg(target_fwd, -to_target_u)
     angle_off = _angle_deg(my_fwd, target_fwd)
 
     target_to_my = my_pos - target_pos
-    projection_h = (target_to_my * target_up).sum(1, keepdim=True)
-    projected_my = my_pos - projection_h * target_up
+    # fmt: off
+    projection_h = (target_to_my*target_up).sum(1, keepdim=True)
+    projected_my = my_pos - projection_h*target_up
+    # fmt: on
     aspect_vec = projected_my - target_pos
     aspect = _angle_deg(aspect_vec, target_fwd)
 
@@ -167,9 +176,11 @@ def _geometry(my_obs41, target_obs41):
         "target_los": target_los,
         "angle_off": angle_off,
         "aspect": aspect,
-        "my_speed": my_obs41[:, 27],
-        "target_speed": target_obs41[:, 27],
-        "altitude": my_pos[:, 2],
+        # fmt: off
+        "my_speed": my_obs41[:,27],
+        "target_speed": target_obs41[:,27],
+        "altitude": my_pos[:,2],
+        # fmt: on
     }
 
 
@@ -196,30 +207,36 @@ def _cooldown_ok(
 
 
 def _lead_vp(g):
-    lead_distance = 0.25 * g["distance"] + 0.4 * g["target_speed"]
-    lead_distance = torch.where(g["los"] > 20.0, lead_distance * 1.3, lead_distance)
-    lead_distance = torch.where(g["los"] < 5.0, lead_distance * 0.8, lead_distance)
+    # fmt: off
+    lead_distance = 0.25*g["distance"] + 0.4*g["target_speed"]
+    lead_distance = torch.where(g["los"] > 20.0, lead_distance*1.3, lead_distance)
+    lead_distance = torch.where(g["los"] < 5.0, lead_distance*0.8, lead_distance)
     lead_distance = lead_distance.clamp(500.0, 2000.0)
 
-    return g["target_pos"] + g["target_fwd"] * lead_distance[:, None], torch.full_like(
+    return g["target_pos"] + g["target_fwd"]*lead_distance[:,None], torch.full_like(
         g["distance"], MODE_LEAD, dtype=torch.long
     )
+    # fmt: on
 
 
 def _lag_vp(g):
-    lag_distance = 0.20 * g["distance"] + 0.30 * g["target_speed"]
+    # fmt: off
+    lag_distance = 0.20*g["distance"] + 0.30*g["target_speed"]
     close = g["distance"] < 500.0
     lag_distance = torch.where(close, torch.full_like(lag_distance, 1500.0), lag_distance)
-    lag_distance = torch.where(g["los"] > 20.0, lag_distance * 1.2, lag_distance)
-    lag_distance = torch.where(g["los"] < 5.0, lag_distance * 0.8, lag_distance)
+    lag_distance = torch.where(g["los"] > 20.0, lag_distance*1.2, lag_distance)
+    lag_distance = torch.where(g["los"] < 5.0, lag_distance*0.8, lag_distance)
     lag_distance = lag_distance.clamp(300.0, 1800.0)
+    # fmt: on
     mode = torch.where(
         close,
         torch.full_like(g["distance"], MODE_LAG_CLOSE, dtype=torch.long),
         torch.full_like(g["distance"], MODE_LAG, dtype=torch.long),
     )
 
-    return g["target_pos"] - g["target_fwd"] * lag_distance[:, None], mode
+    # fmt: off
+    return g["target_pos"] - g["target_fwd"]*lag_distance[:,None], mode
+    # fmt: on
 
 
 def _pure_vp(g):
@@ -232,14 +249,16 @@ def _climb_vp(g):
     forward_distance = torch.where(
         emergency, torch.full_like(g["distance"], 1200.0), torch.full_like(g["distance"], 1800.0)
     )
+    # fmt: off
     vp = (
         g["my_pos"]
-        + g["my_fwd"] * forward_distance[:, None]
+        + g["my_fwd"]*forward_distance[:,None]
         + torch.stack(
             (torch.zeros_like(altitude_error), torch.zeros_like(altitude_error), altitude_error),
             1,
         )
     )
+    # fmt: on
     mode = torch.where(
         emergency,
         torch.full_like(g["distance"], MODE_CLIMB_EMERGENCY, dtype=torch.long),
@@ -250,55 +269,73 @@ def _climb_vp(g):
 
 
 def _break_vp(g):
-    direction = g["to_target"] / g["distance"][:, None].clamp_min(1e-6)
-    right_comp = (direction * g["my_right"]).sum(1)
+    # fmt: off
+    direction = g["to_target"]/g["distance"][:,None].clamp_min(1e-6)
+    # fmt: on
+    # fmt: off
+    right_comp = (direction*g["my_right"]).sum(1)
+    # fmt: on
     break_sign = torch.where(
         right_comp >= 0.0, torch.ones_like(right_comp), -torch.ones_like(right_comp)
     )
+    # fmt: off
     vp = (
         g["my_pos"]
-        + g["my_fwd"] * 500.0
-        + g["my_right"] * (break_sign * 6000.0)[:, None]
-        + g["my_up"] * 300.0
+        + g["my_fwd"]*500.0
+        + g["my_right"]*(break_sign*6000.0)[:,None]
+        + g["my_up"]*300.0
     )
+    # fmt: on
 
     return vp, torch.full_like(g["distance"], MODE_BREAK, dtype=torch.long)
 
 
 def _high_yoyo_vp(g):
-    vp = g["target_pos"] + g["target_up"] * 500.0 - g["target_fwd"] * 100.0
+    # fmt: off
+    vp = g["target_pos"] + g["target_up"]*500.0 - g["target_fwd"]*100.0
+    # fmt: on
 
     return vp, torch.full_like(g["distance"], MODE_HIGH_YOYO, dtype=torch.long)
 
 
 def _barrel_roll_vp(g):
     rel = g["my_pos"] - g["target_pos"]
-    fwd_comp = (rel * g["target_fwd"]).sum(1, keepdim=True)
-    perp = rel - g["target_fwd"] * fwd_comp
+    # fmt: off
+    fwd_comp = (rel*g["target_fwd"]).sum(1, keepdim=True)
+    perp = rel - g["target_fwd"]*fwd_comp
     perp_len = perp.norm(dim=1)
-    fallback = g["my_up"] * 50.0
-    perp = torch.where((perp_len < 50.0)[:, None], fallback, perp)
+    fallback = g["my_up"]*50.0
+    # fmt: on
+    # fmt: off
+    perp = torch.where((perp_len < 50.0)[:,None], fallback, perp)
+    # fmt: on
     perp_norm = _unit(perp)
     orbit_tangent = _cross(g["target_fwd"], perp_norm)
-    vp = g["target_pos"] - g["target_fwd"] * 200.0 + perp_norm * 350.0 + orbit_tangent * 350.0
+    # fmt: off
+    vp = g["target_pos"] - g["target_fwd"]*200.0 + perp_norm*350.0 + orbit_tangent*350.0
+    # fmt: on
 
     return vp, torch.full_like(g["distance"], MODE_BARREL_ROLL, dtype=torch.long)
 
 
 def _extend_vp(g):
-    return g["my_pos"] + g["my_fwd"] * 10000.0, torch.full_like(
+    # fmt: off
+    return g["my_pos"] + g["my_fwd"]*10000.0, torch.full_like(
         g["distance"], MODE_EXTEND, dtype=torch.long
     )
+    # fmt: on
 
 
 def _low_yoyo_vp(g):
-    dive_depth = torch.minimum(g["distance"] * 0.25, torch.full_like(g["distance"], 800.0))
-    lead_dist = torch.minimum(g["distance"] * 0.25, torch.full_like(g["distance"], 1200.0))
+    # fmt: off
+    dive_depth = torch.minimum(g["distance"]*0.25, torch.full_like(g["distance"], 800.0))
+    lead_dist = torch.minimum(g["distance"]*0.25, torch.full_like(g["distance"], 1200.0))
     vp = (
         g["target_pos"]
-        - g["target_up"] * dive_depth[:, None]
-        + g["target_fwd"] * lead_dist[:, None]
+        - g["target_up"]*dive_depth[:,None]
+        + g["target_fwd"]*lead_dist[:,None]
     )
+    # fmt: on
 
     return vp, torch.full_like(g["distance"], MODE_LOW_YOYO, dtype=torch.long)
 
@@ -312,7 +349,9 @@ def _apply_choice(
     candidate_mode,
 ):
     take = (~selected) & condition
-    vp = torch.where(take[:, None], candidate_vp, vp)
+    # fmt: off
+    vp = torch.where(take[:,None], candidate_vp, vp)
+    # fmt: on
     mode = torch.where(take, candidate_mode, mode)
 
     return selected | take, vp, mode
@@ -485,46 +524,53 @@ def vp_to_action(
     target_location = vp
     to_vp = target_location - my_pos
     distance = to_vp.norm(dim=1).clamp_min(1e-6)
-    los = torch.rad2deg(torch.acos((my_fwd * (to_vp / distance[:, None])).sum(1).clamp(-1.0, 1.0)))
+    # fmt: off
+    los = torch.rad2deg(torch.acos((my_fwd*(to_vp/distance[:,None])).sum(1).clamp(-1.0, 1.0)))
 
-    forward_point = my_fwd * 1000.0 + my_pos
+    forward_point = my_fwd*1000.0 + my_pos
     forward_point_to_vp = target_location - forward_point
-    proj_v = (forward_point_to_vp * my_fwd).sum(1, keepdim=True) * my_fwd
+    proj_v = (forward_point_to_vp*my_fwd).sum(1, keepdim=True)*my_fwd
     proj_p = target_location - proj_v
     proj_tv = proj_p - forward_point
     proj_len = proj_tv.norm(dim=1).clamp_min(1e-6)
-    proj_u = proj_tv / proj_len[:, None]
+    proj_u = proj_tv/proj_len[:,None]
 
-    up_angle = torch.acos((my_up * proj_u).sum(1).clamp(-1.0, 1.0))
-    side = torch.where((my_right * proj_u).sum(1) >= 0.0, 1.0, -1.0)
-    ut_angle = up_angle * side
+    up_angle = torch.acos((my_up*proj_u).sum(1).clamp(-1.0, 1.0))
+    side = torch.where((my_right*proj_u).sum(1) >= 0.0, 1.0, -1.0)
+    ut_angle = up_angle*side
     ut_deg = torch.rad2deg(ut_angle)
     sin_ut = torch.sin(ut_angle)
 
-    roll_close = torch.where(los > 3.0, sin_ut.clamp(-1.0, 1.0), sin_ut * los * -0.1)
+    roll_close = torch.where(los > 3.0, sin_ut.clamp(-1.0, 1.0), sin_ut*los*-0.1)
     roll_near = sin_ut.clamp(-1.0, 1.0)
-    roll_near = roll_near * roll_near.abs()
+    roll_near = roll_near*roll_near.abs()
     roll = torch.where(ut_deg.abs() > 90.0, roll_close, roll_near)
-    roll = torch.where(roll < 0.1, roll * 3.0, roll)
-    roll = roll * los.clamp(0.0, 1.0)
+    roll = torch.where(roll < 0.1, roll*3.0, roll)
+    roll = roll*los.clamp(0.0, 1.0)
 
-    rudder = -sin_ut * los.clamp(0.0, 6.0)
-    error_effect = (los / 6.0).clamp(0.0, 1.5)
-    roll_effect = 1.0 - (ut_deg.abs() / 90.0).clamp(0.0, 1.0)
+    rudder = -sin_ut*los.clamp(0.0, 6.0)
+    error_effect = (los/6.0).clamp(0.0, 1.5)
+    roll_effect = 1.0 - (ut_deg.abs()/90.0).clamp(0.0, 1.0)
     horizon_effect = torch.where(ut_deg.abs() <= 90.0, 1.0, 0.5)
     pitch = torch.where(
-        los < 90.0, -error_effect * roll_effect * horizon_effect, torch.full_like(los, -1.0)
+        los < 90.0, -error_effect*roll_effect*horizon_effect, torch.full_like(los, -1.0)
     )
+    # fmt: on
 
     a = torch.zeros(my_obs41.shape[0], 4, device=my_obs41.device, dtype=my_obs41.dtype)
-    a[:, 0] = roll.clamp(-1.0, 1.0)
-    a[:, 1] = pitch.clamp(-1.0, 1.0)
-    a[:, 2] = rudder.clamp(-1.0, 1.0)
+    # fmt: off
+    a[:,0] = roll.clamp(-1.0, 1.0)
+    a[:,1] = pitch.clamp(-1.0, 1.0)
+    a[:,2] = rudder.clamp(-1.0, 1.0)
+    # fmt: on
     throttle_t = torch.as_tensor(throttle, device=my_obs41.device, dtype=my_obs41.dtype)
 
     if throttle_t.ndim == 0:
         throttle_t = throttle_t.expand(my_obs41.shape[0])
-    a[:, 3] = throttle_t.clamp(0.0, 1.0)
+
+    # fmt: off
+    a[:,3] = throttle_t.clamp(0.0, 1.0)
+    # fmt: on
 
     return a
 

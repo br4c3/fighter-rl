@@ -30,9 +30,13 @@ class CompetitionF100(torch.nn.Module):
             ]
             cols = torch.tensor(lines[0])
             body = torch.tensor(lines[1:])
-            self.register_buffer(name + "_mach", body[:, 0].contiguous())
+            # fmt: off
+            self.register_buffer(name + "_mach", body[:,0].contiguous())
+            # fmt: on
             self.register_buffer(name + "_alt", cols.contiguous())
-            self.register_buffer(name + "_map", body[:, 1:].contiguous())
+            # fmt: off
+            self.register_buffer(name + "_map", body[:,1:].contiguous())
+            # fmt: on
 
     def initial(self, batch, device=None):
         n1 = torch.full((batch,), self.idle_n1, device=device)
@@ -52,32 +56,40 @@ class CompetitionF100(torch.nn.Module):
 
     def steady_dry_fuel_flow(self, n2, mach, altitude_ft):
         """Fuel flow left by JSBSim InitRunning/GetSteadyState (lb/hour)."""
-        idle = self._map("idle", mach, altitude_ft) * self.mil
-        mil_component = self._map("mil", mach, altitude_ft) * (self.mil - idle)
-        n2norm = ((n2 - self.idle_n2) / (100 - self.idle_n2)).clamp(0, 1)
-        dry = idle + mil_component * n2norm.square()
+        # fmt: off
+        idle = self._map("idle", mach, altitude_ft)*self.mil
+        mil_component = self._map("mil", mach, altitude_ft)*(self.mil - idle)
+        n2norm = ((n2 - self.idle_n2)/(100 - self.idle_n2)).clamp(0, 1)
+        dry = idle + mil_component*n2norm.square()
+        # fmt: on
         temperature = standard_temperature(altitude_ft)
-        corrected_tsfc = 0.74 * torch.sqrt(temperature / 389.7) * (0.84 + (1 - n2norm).square())
+        # fmt: off
+        corrected_tsfc = 0.74*torch.sqrt(temperature/389.7)*(0.84 + (1 - n2norm).square())
 
-        return (dry * corrected_tsfc).clamp_min(self.mil**0.2 * 107.0)
+        return (dry*corrected_tsfc).clamp_min(self.mil**0.2*107.0)
+        # fmt: on
 
     def thrust_from_n2(self, n2, throttle_cmd, mach, altitude_ft):
         """Recover current thrust from exposed release N2/throttle telemetry."""
-        lever = 2.0 * throttle_cmd.clamp(0, 1)
-        idle = self._map("idle", mach, altitude_ft) * self.mil
-        mil_component = self._map("mil", mach, altitude_ft) * (self.mil - idle)
-        aug = self._map("aug", mach, altitude_ft) * self.maximum
-        n2norm = ((n2 - self.idle_n2) / (100 - self.idle_n2)).clamp(0, 1)
-        dry = idle + mil_component * n2norm.square()
+        # fmt: off
+        lever = 2.0*throttle_cmd.clamp(0, 1)
+        idle = self._map("idle", mach, altitude_ft)*self.mil
+        mil_component = self._map("mil", mach, altitude_ft)*(self.mil - idle)
+        aug = self._map("aug", mach, altitude_ft)*self.maximum
+        n2norm = ((n2 - self.idle_n2)/(100 - self.idle_n2)).clamp(0, 1)
+        dry = idle + mil_component*n2norm.square()
 
-        return torch.where(lever > 1, dry + (aug - dry) * (lever - 1).clamp(0, 1), dry)
+        return torch.where(lever > 1, dry + (aug - dry)*(lever - 1).clamp(0, 1), dry)
+        # fmt: on
 
     def forward(self, state, throttle_cmd, mach, altitude_ft):
         # f16.xml doubles pilot throttle: [0,.5] dry range, [.5,1] augmentation.
-        lever = 2.0 * throttle_cmd.clamp(0, 1)
-        idle = self._map("idle", mach, altitude_ft) * self.mil
-        mil_component = self._map("mil", mach, altitude_ft) * (self.mil - idle)
-        aug = self._map("aug", mach, altitude_ft) * self.maximum
+        # fmt: off
+        lever = 2.0*throttle_cmd.clamp(0, 1)
+        idle = self._map("idle", mach, altitude_ft)*self.mil
+        mil_component = self._map("mil", mach, altitude_ft)*(self.mil - idle)
+        aug = self._map("aug", mach, altitude_ft)*self.maximum
+        # fmt: on
         dry_fraction = lever.clamp(0, 1)
         target_n1 = self.idle_n1 + (100 - self.idle_n1) * dry_fraction
         target_n1 = torch.where(lever > 1, target_n1.new_tensor(100.0), target_n1)
@@ -87,11 +99,13 @@ class CompetitionF100(torch.nn.Module):
         n = torch.minimum(torch.ones_like(n2norm0), n2norm0 + 0.1)
         # Exact default FGSpoolUp rates for bypass ratio 0.4.
         density, _ = standard_atmosphere(altitude_ft)
-        density_ratio = density / 2.3768924e-3
-        denominator = 1 + 3 * (1 - n).pow(3) + (1 - density_ratio)
-        up = 90 / 3.4 / denominator
-        down_n1 = 2.4 * 90 / 3.4 / denominator
-        down_n2 = 3.0 * 90 / 3.4 / denominator
+        # fmt: off
+        density_ratio = density/2.3768924e-3
+        denominator = 1 + 3*(1 - n).pow(3) + (1 - density_ratio)
+        up = 90/3.4/denominator
+        down_n1 = 2.4*90/3.4/denominator
+        down_n2 = 3.0*90/3.4/denominator
+        # fmt: on
 
         def seek(current, target, up_rate, down_rate):
             delta = torch.where(target > current, up_rate * self.dt, -down_rate * self.dt)
@@ -103,15 +117,19 @@ class CompetitionF100(torch.nn.Module):
 
         n1 = seek(state.n1, target_n1, up, down_n1)
         n2 = seek(state.n2, target_n2, up, down_n2)
-        n2norm = ((n2 - self.idle_n2) / (100 - self.idle_n2)).clamp(0, 1)
-        dry = idle + mil_component * n2norm.square()
-        thrust = torch.where(lever > 1, dry + (aug - dry) * (lever - 1).clamp(0, 1), dry)
+        # fmt: off
+        n2norm = ((n2 - self.idle_n2)/(100 - self.idle_n2)).clamp(0, 1)
+        dry = idle + mil_component*n2norm.square()
+        thrust = torch.where(lever > 1, dry + (aug - dry)*(lever - 1).clamp(0, 1), dry)
+        # fmt: on
         # Exact FGTurbine fuel model: corrected dry TSFC, augmented TSFC and
         # asymmetric Seek rates in lb/hour per second.
         temperature = standard_temperature(altitude_ft)
-        corrected_tsfc = 0.74 * torch.sqrt(temperature / 389.7) * (0.84 + (1 - n2norm).square())
-        target_dry = (dry * corrected_tsfc).clamp_min(self.mil**0.2 * 107.0)
-        target_aug = thrust * 2.05
+        # fmt: off
+        corrected_tsfc = 0.74*torch.sqrt(temperature/389.7)*(0.84 + (1 - n2norm).square())
+        target_dry = (dry*corrected_tsfc).clamp_min(self.mil**0.2*107.0)
+        target_aug = thrust*2.05
+        # fmt: on
         target_flow = torch.where(lever > 1, target_aug, target_dry)
         accel = torch.where(
             lever > 1, torch.full_like(lever, 5000.0), torch.full_like(lever, 1000.0)

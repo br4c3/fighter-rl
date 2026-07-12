@@ -11,7 +11,9 @@ def _interp1(x, grid, values):
     y0, y1 = values[i - 1], values[i]
     xc = x.clamp(grid[0], grid[-1])
 
-    return y0 + (xc - x0) * (y1 - y0) / (x1 - x0)
+    # fmt: off
+    return y0 + (xc - x0)*(y1 - y0)/(x1 - x0)
+    # fmt: on
 
 
 def _interp2(row, col, rows, cols, values):
@@ -23,7 +25,9 @@ def _interp2(row, col, rows, cols, values):
     v00, v01 = values[ir - 1, ic - 1], values[ir - 1, ic]
     v10, v11 = values[ir, ic - 1], values[ir, ic]
 
-    return (v00 * (1 - tc) + v01 * tc) * (1 - tr) + (v10 * (1 - tc) + v11 * tc) * tr
+    # fmt: off
+    return (v00*(1 - tc) + v01*tc)*(1 - tr) + (v10*(1 - tc) + v11*tc)*tr
+    # fmt: on
 
 
 class CompetitionXMLAero(torch.nn.Module):
@@ -60,15 +64,21 @@ class CompetitionXMLAero(torch.nn.Module):
 
                         if len(independent) == 1:
                             array = torch.tensor(lines, dtype=torch.float32)
-                            self.register_buffer(prefix + "_x", array[:, 0].contiguous())
-                            self.register_buffer(prefix + "_v", array[:, 1].contiguous())
+                            # fmt: off
+                            self.register_buffer(prefix + "_x", array[:,0].contiguous())
+                            self.register_buffer(prefix + "_v", array[:,1].contiguous())
+                            # fmt: on
                             factors.append(("table1", (prefix, independent[0])))
                         elif len(independent) == 2:
                             cols = torch.tensor(lines[0], dtype=torch.float32)
                             body = torch.tensor(lines[1:], dtype=torch.float32)
-                            self.register_buffer(prefix + "_r", body[:, 0].contiguous())
+                            # fmt: off
+                            self.register_buffer(prefix + "_r", body[:,0].contiguous())
+                            # fmt: on
                             self.register_buffer(prefix + "_c", cols.contiguous())
-                            self.register_buffer(prefix + "_v", body[:, 1:].contiguous())
+                            # fmt: off
+                            self.register_buffer(prefix + "_v", body[:,1:].contiguous())
+                            # fmt: on
                             factors.append(("table2", (prefix, independent[0], independent[1])))
                         else:
                             raise ValueError("only 1D/2D tables are present in competition XML")
@@ -146,19 +156,25 @@ class CompetitionXMLAero(torch.nn.Module):
 
 def airborne_properties(state12, surfaces_deg, speedbrake_deg=None, gear_pos=None):
     """Build the 21 XML properties for airborne gear-up training."""
-    alt, vt = state12[:, 2], state12[:, 6]
-    alpha, beta = state12[:, 7], state12[:, 8]
-    p, q, r = state12[:, 9], state12[:, 10], state12[:, 11]
+    # fmt: off
+    alt, vt = state12[:,2], state12[:,6]
+    alpha, beta = state12[:,7], state12[:,8]
+    p, q, r = state12[:,9], state12[:,10], state12[:,11]
     values = torch.deg2rad(surfaces_deg)
-    elevator, aileron, rudder, lef, tef = values[:, :5].unbind(1)
-    aero_aileron = values[:, 5] if values.shape[1] > 5 else aileron
+    elevator, aileron, rudder, lef, tef = values[:,:5].unbind(1)
+    aero_aileron = values[:,5] if values.shape[1] > 5 else aileron
+    # fmt: on
     rho, sound_speed = standard_atmosphere(alt)
-    mach = vt / sound_speed
-    qbar = 0.5 * rho * vt.square()
+    # fmt: off
+    mach = vt/sound_speed
+    qbar = 0.5*rho*vt.square()
+    # fmt: on
     sb = torch.zeros_like(vt) if speedbrake_deg is None else torch.deg2rad(speedbrake_deg)
     gear = torch.zeros_like(vt) if gear_pos is None else gear_pos
-    tef_control = tef / 0.349
-    aileron_speed_comp = aileron / 0.375
+    # fmt: off
+    tef_control = tef/0.349
+    aileron_speed_comp = aileron/0.375
+    # fmt: on
     flaperon_mix = (
         (-tef_control - aileron_speed_comp).clamp(-1, 1)
         + (tef_control - aileron_speed_comp).clamp(-1, 1)

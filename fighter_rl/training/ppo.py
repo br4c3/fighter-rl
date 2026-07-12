@@ -275,12 +275,14 @@ def ppo_update_mlp(
             ).mean()
             value_loss = (output.value - flat_ret[idx]).square().mean()
             mean_loss = action_mean.square().mean()
+            # fmt: off
             loss = (
                 policy_loss
-                + cfg.vf_coef * value_loss
-                - cfg.entropy_coef * entropy.mean()
-                + cfg.action_mean_l2_coef * mean_loss
+                + cfg.vf_coef*value_loss
+                - cfg.entropy_coef*entropy.mean()
+                + cfg.action_mean_l2_coef*mean_loss
             )
+            # fmt: on
 
             if not bool(torch.isfinite(loss)):
                 continue
@@ -353,12 +355,14 @@ def ppo_update_lstm(
             ).mean()
             value_loss = (mb_value - mb_ret).square().mean()
             mean_loss = action_mean.square().mean()
+            # fmt: off
             loss = (
                 policy_loss
-                + cfg.vf_coef * value_loss
-                - cfg.entropy_coef * mb_entropy.mean()
-                + cfg.action_mean_l2_coef * mean_loss
+                + cfg.vf_coef*value_loss
+                - cfg.entropy_coef*mb_entropy.mean()
+                + cfg.action_mean_l2_coef*mean_loss
             )
+            # fmt: on
 
             if not bool(torch.isfinite(loss)):
                 continue
@@ -537,8 +541,10 @@ def main():
             for t in reversed(range(rewards.shape[0])):
                 nv = next_value if t == rewards.shape[0] - 1 else values[t + 1]
                 nonterminal = (1.0 - dones[t]) * valids[t].float()
-                delta = (rewards[t] + cfg.gamma * nv * nonterminal - values[t]) * valids[t].float()
-                last = delta + cfg.gamma * cfg.gae_lambda * nonterminal * last
+                # fmt: off
+                delta = (rewards[t] + cfg.gamma*nv*nonterminal - values[t])*valids[t].float()
+                last = delta + cfg.gamma*cfg.gae_lambda*nonterminal*last
+                # fmt: on
                 advantages[t] = last
 
             returns = advantages + values

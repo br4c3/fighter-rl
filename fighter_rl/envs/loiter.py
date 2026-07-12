@@ -295,9 +295,11 @@ class CompetitionLoiterCurriculumEnv:
             return
 
         if getattr(plane, "use_eci", False) and hasattr(plane, "release_position_m"):
-            plane.release_position_m[:, 0] = north_m
-            plane.release_position_m[:, 1] = east_m
-            plane.release_position_m[:, 2] = -alt_m
+            # fmt: off
+            plane.release_position_m[:,0] = north_m
+            plane.release_position_m[:,1] = east_m
+            plane.release_position_m[:,2] = -alt_m
+            # fmt: on
 
     def _sample_policy_ids(self, mix):
         mapping = {
@@ -483,10 +485,12 @@ class CompetitionLoiterCurriculumEnv:
             own_e = torch.zeros(self.n, device=self.device)
             bearing_rad = torch.deg2rad(los_bearing)
 
-            self.own.state[:, 0] = own_n / 0.3048
-            self.own.state[:, 1] = own_e / 0.3048
-            self.target.state[:, 0] = (own_n + distance * torch.cos(bearing_rad)) / 0.3048
-            self.target.state[:, 1] = (own_e + distance * torch.sin(bearing_rad)) / 0.3048
+            # fmt: off
+            self.own.state[:,0] = own_n/0.3048
+            self.own.state[:,1] = own_e/0.3048
+            self.target.state[:,0] = (own_n + distance*torch.cos(bearing_rad))/0.3048
+            self.target.state[:,1] = (own_e + distance*torch.sin(bearing_rad))/0.3048
+            # fmt: on
             self._sync_release_position(self.own, own_n, own_e, own_alt)
             self._sync_release_position(
                 self.target,
@@ -546,14 +550,16 @@ class CompetitionLoiterCurriculumEnv:
             distance = self._uniform(target_cfg.get("range_m"), 5000)
             bearing = torch.deg2rad(self._uniform(target_cfg.get("bearing_deg"), 0))
             radius = float(own_cfg.get("radius", 0.0))
-            own_r = torch.sqrt(torch.rand(self.n, device=self.device)) * radius
-            own_b = torch.rand(self.n, device=self.device) * 2 * torch.pi
-            own_n = own_r * torch.cos(own_b)
-            own_e = own_r * torch.sin(own_b)
-            self.own.state[:, 0] = own_n / 0.3048
-            self.own.state[:, 1] = own_e / 0.3048
-            self.target.state[:, 0] = (own_n + distance * torch.cos(bearing)) / 0.3048
-            self.target.state[:, 1] = (own_e + distance * torch.sin(bearing)) / 0.3048
+            # fmt: off
+            own_r = torch.sqrt(torch.rand(self.n, device=self.device))*radius
+            own_b = torch.rand(self.n, device=self.device)*2*torch.pi
+            own_n = own_r*torch.cos(own_b)
+            own_e = own_r*torch.sin(own_b)
+            self.own.state[:,0] = own_n/0.3048
+            self.own.state[:,1] = own_e/0.3048
+            self.target.state[:,0] = (own_n + distance*torch.cos(bearing))/0.3048
+            self.target.state[:,1] = (own_e + distance*torch.sin(bearing))/0.3048
+            # fmt: on
             self._sync_release_position(self.own, own_n, own_e, own_alt)
             self._sync_release_position(
                 self.target,
@@ -633,7 +639,9 @@ class CompetitionLoiterCurriculumEnv:
         self.prev_policy_action = torch.zeros(self.n, 4, device=self.device)
         base = self._base_observation()
         frame = self._make_frame(base, torch.zeros(self.n, 4, device=self.device))
-        self.history = frame[:, None, :].expand(-1, self.frames, -1).clone()
+        # fmt: off
+        self.history = frame[:,None,:].expand(-1, self.frames, -1).clone()
+        # fmt: on
         self.cached_observation = self.history.reshape(self.n, -1)
 
         return self.cached_observation
@@ -647,21 +655,27 @@ class CompetitionLoiterCurriculumEnv:
         return x
 
     def _target_frame_rel(self, o, t):
-        rel = o[:, :3] - t[:, :3]
-        psi = torch.deg2rad(t[:, 5])
+        # fmt: off
+        rel = o[:,:3] - t[:,:3]
+        psi = torch.deg2rad(t[:,5])
+        # fmt: on
         forward = torch.stack((torch.cos(psi), torch.sin(psi), torch.zeros_like(psi)), 1)
         right = torch.stack((-torch.sin(psi), torch.cos(psi), torch.zeros_like(psi)), 1)
 
-        return (rel * forward).sum(1), (rel * right).sum(1), rel[:, 2]
+        # fmt: off
+        return (rel*forward).sum(1), (rel*right).sum(1), rel[:,2]
+        # fmt: on
 
     def _gun_phi(self, distance, ata, aa):
         cfg = self.stage.reward
         theta = max(1.0, float(cfg.get("phi_ata_deg", 6.0)))
         center = float(cfg.get("phi_range_center_m", 650.0))
         sigma = max(1.0, float(cfg.get("phi_range_sigma_m", 450.0)))
-        aim = torch.exp(-torch.square(ata.abs() / theta))
-        range_score = torch.exp(-torch.square((distance - center) / sigma))
-        aft = 0.5 + 0.5 * (1 - aa.abs() / 180.0).clamp(0, 1)
+        # fmt: off
+        aim = torch.exp(-torch.square(ata.abs()/theta))
+        range_score = torch.exp(-torch.square((distance - center)/sigma))
+        aft = 0.5 + 0.5*(1 - aa.abs()/180.0).clamp(0, 1)
+        # fmt: on
 
         return torch.nan_to_num(aim * range_score * aft, nan=0.0, posinf=0.0, neginf=0.0).clamp(
             0, 1
@@ -671,20 +685,24 @@ class CompetitionLoiterCurriculumEnv:
         o, t = self.own.observation41(), self.target.observation41()
         d, r, ata, aa, az, el = self._geometry(o, t)
         x = torch.empty(self.n, 16, device=self.device)
-        x[:, 0] = (o[:, 3] / 180).clamp(-1, 1)
-        x[:, 1] = (o[:, 4] / 90).clamp(-1, 1)
-        x[:, 2] = (torch.remainder(o[:, 5], 360) / 180 - 1).clamp(-1, 1)
-        x[:, 3] = (o[:, 12] / 300 - 1).clamp(-1, 1)
-        x[:, 4] = ((-o[:, 2]) / 7500 - 1).clamp(-1, 1)
-        x[:, 5] = 2 * self.own_health - 1
-        x[:, 6] = (d[:, 0] / 15000).clamp(-1, 1)
-        x[:, 7] = (d[:, 1] / 15000).clamp(-1, 1)
-        x[:, 8] = (d[:, 2] / 8000).clamp(-1, 1)
-        x[:, 9] = ata / 180
-        x[:, 10] = aa / 180
-        x[:, 11] = az / 180
-        x[:, 12] = el / 90
-        x[:, 13] = 2 * self.target_health - 1
+
+        # fmt: off
+        x[:,0] = (o[:,3]/180).clamp(-1, 1)
+        x[:,1] = (o[:,4]/90).clamp(-1, 1)
+        x[:,2] = (torch.remainder(o[:,5], 360)/180 - 1).clamp(-1, 1)
+        x[:,3] = (o[:,12]/300 - 1).clamp(-1, 1)
+        x[:,4] = ((-o[:,2])/7500 - 1).clamp(-1, 1)
+        x[:,5] = 2*self.own_health - 1
+        x[:,6] = (d[:,0]/15000).clamp(-1, 1)
+        x[:,7] = (d[:,1]/15000).clamp(-1, 1)
+        x[:,8] = (d[:,2]/8000).clamp(-1, 1)
+        x[:,9] = ata/180
+        x[:,10] = aa/180
+        x[:,11] = az/180
+        x[:,12] = el/90
+        x[:,13] = 2*self.target_health - 1
+        # fmt: on
+
         wez = self.stage.wez
         inside = (
             (r >= float(wez["min_range_m"]))
@@ -693,8 +711,11 @@ class CompetitionLoiterCurriculumEnv:
             if float(wez["max_range_m"]) > 0
             else torch.zeros_like(r, dtype=torch.bool)
         )
-        x[:, 14] = torch.where(inside, 1.0, -1.0)
-        x[:, 15] = 2 * (1 - ata.abs() / 30).clamp(0, 1) * (1 - r / 3000).clamp(0, 1) - 1
+
+        # fmt: off
+        x[:,14] = torch.where(inside, 1.0, -1.0)
+        x[:,15] = 2*(1 - ata.abs()/30).clamp(0, 1)*(1 - r/3000).clamp(0, 1) - 1
+        # fmt: on
 
         return torch.nan_to_num(x.clamp(-1, 1), nan=0.0, posinf=1.0, neginf=-1.0)
 
@@ -739,11 +760,13 @@ class CompetitionLoiterCurriculumEnv:
             shooter = pid == 5
             bank_cmd = torch.where(weak, self.loiter_bank.clamp(-22, 22), bank_cmd)
             bank_cmd = torch.where(constant, self.loiter_bank.clamp(-50, 50), bank_cmd)
+            # fmt: off
             jink_cmd = (
                 self.loiter_bank
                 + self.target_wave_amp
-                * torch.sin(time / self.target_wave_period * 2 * torch.pi + self.target_wave_phase)
+                * torch.sin(time/self.target_wave_period*2*torch.pi + self.target_wave_phase)
             ).clamp(-62, 62)
+            # fmt: on
             bank_cmd = torch.where(jink, jink_cmd, bank_cmd)
             base_turn = self.loiter_bank.clamp(-45, 45)
             bank_cmd = torch.where(defensive | shooter, base_turn, bank_cmd)
@@ -757,20 +780,28 @@ class CompetitionLoiterCurriculumEnv:
             nose_cmd = torch.where(az >= 0, torch.full_like(az, 35.0), torch.full_like(az, -35.0))
             bank_cmd = torch.where(defensive & (distance < 2200.0), break_cmd, bank_cmd)
             bank_cmd = torch.where(shooter & (target_ata > 3.0), nose_cmd, bank_cmd)
+            # fmt: off
             speed_wave_cmd = (
                 self.target_speed
                 + self.target_speed_wave
                 * torch.sin(
-                    time / (self.target_wave_period * 1.7) * 2 * torch.pi + self.target_wave_phase
+                    time/(self.target_wave_period*1.7)*2*torch.pi + self.target_wave_phase
                 )
             ).clamp(210, 310)
+            # fmt: on
             speed_cmd = torch.where(straight, self.target_speed.clamp(210, 310), speed_wave_cmd)
-            bank_error = torch.remainder(bank_cmd - obs[:, 3] + 180, 360) - 180
+            # fmt: off
+            bank_error = torch.remainder(bank_cmd - obs[:,3] + 180, 360) - 180
+            # fmt: on
             a = torch.zeros(self.n, 4, device=self.device)
-            a[:, 0] = (0.035 * bank_error - 0.012 * obs[:, 9]).clamp(-0.75, 0.75)
-            altitude_error = (self.target_altitude - (-obs[:, 2])) / 1500
-            a[:, 1] = (-altitude_error + obs[:, 4] / 45).clamp(-0.45, 0.45)
-            a[:, 3] = (0.65 + (speed_cmd - obs[:, 27]) / 150).clamp(0.25, 1.0)
+
+            # fmt: off
+            a[:,0] = (0.035*bank_error - 0.012*obs[:,9]).clamp(-0.75, 0.75)
+            altitude_error = (self.target_altitude - (-obs[:,2]))/1500
+            a[:,1] = (-altitude_error + obs[:,4]/45).clamp(-0.45, 0.45)
+            a[:,3] = (0.65 + (speed_cmd - obs[:,27])/150).clamp(0.25, 1.0)
+            # fmt: on
+
             bt_mask = pid == 6
 
             if bool(bt_mask.any()):
@@ -781,35 +812,46 @@ class CompetitionLoiterCurriculumEnv:
                     dt=1.0 / self.hz,
                     active_mask=bt_mask,
                 )
-                a = torch.where(bt_mask[:, None], bt, a)
+                # fmt: off
+                a = torch.where(bt_mask[:,None], bt, a)
+                # fmt: on
             return torch.nan_to_num(a, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1, 1)
 
         obs = self.target.observation41()
-        bank_error = torch.remainder(self.loiter_bank - obs[:, 3] + 180, 360) - 180
+        # fmt: off
+        bank_error = torch.remainder(self.loiter_bank - obs[:,3] + 180, 360) - 180
+        # fmt: on
 
         if self.target_maneuver != "fixed_loiter":
             time = self.target.frame_index / self.hz
+            # fmt: off
             bank_cmd = (
                 self.loiter_bank
                 + self.target_wave_amp
-                * torch.sin(time / self.target_wave_period * 2 * torch.pi + self.target_wave_phase)
+                * torch.sin(time/self.target_wave_period*2*torch.pi + self.target_wave_phase)
             ).clamp(-65, 65)
             speed_cmd = (
                 self.target_speed
                 + self.target_speed_wave
                 * torch.sin(
-                    time / (self.target_wave_period * 1.7) * 2 * torch.pi + self.target_wave_phase
+                    time/(self.target_wave_period*1.7)*2*torch.pi + self.target_wave_phase
                 )
             ).clamp(190, 310)
-            bank_error = torch.remainder(bank_cmd - obs[:, 3] + 180, 360) - 180
+            # fmt: on
+            # fmt: off
+            bank_error = torch.remainder(bank_cmd - obs[:,3] + 180, 360) - 180
+            # fmt: on
         else:
             speed_cmd = self.target_speed
         a = torch.zeros(self.n, 4, device=self.device)
-        a[:, 0] = (0.035 * bank_error - 0.012 * obs[:, 9]).clamp(-0.65, 0.65)
+
+        # fmt: off
+        a[:,0] = (0.035*bank_error - 0.012*obs[:,9]).clamp(-0.65, 0.65)
         # F-16 pitch action is positive-forward/nose-down and negative-aft/up.
-        altitude_error = (self.target_altitude - (-obs[:, 2])) / 1500
-        a[:, 1] = (-altitude_error + obs[:, 4] / 45).clamp(-0.40, 0.40)
-        a[:, 3] = (0.65 + (speed_cmd - obs[:, 27]) / 150).clamp(0.25, 1.0)
+        altitude_error = (self.target_altitude - (-obs[:,2]))/1500
+        a[:,1] = (-altitude_error + obs[:,4]/45).clamp(-0.40, 0.40)
+        a[:,3] = (0.65 + (speed_cmd - obs[:,27])/150).clamp(0.25, 1.0)
+        # fmt: on
 
         return torch.nan_to_num(a, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1, 1)
 
@@ -870,7 +912,9 @@ class CompetitionLoiterCurriculumEnv:
             neginf=-1.0,
         ).clamp(-1, 1)
         sim = a.clone()
-        sim[:, 3] = (sim[:, 3] + 1) / 2
+        # fmt: off
+        sim[:,3] = (sim[:,3] + 1)/2
+        # fmt: on
 
         total_own_damage = torch.zeros(self.n, device=self.device)
         total_target_damage = torch.zeros_like(total_own_damage)
@@ -927,8 +971,10 @@ class CompetitionLoiterCurriculumEnv:
         aa_s = torch.nan_to_num(aa, nan=180.0, posinf=180.0, neginf=-180.0)
         target_ata_s = torch.nan_to_num(target_ata, nan=180.0, posinf=180.0, neginf=-180.0)
 
-        own_alt = -o[:, 2]
-        target_alt = -t[:, 2]
+        # fmt: off
+        own_alt = -o[:,2]
+        target_alt = -t[:,2]
+        # fmt: on
 
         own_alt_s = torch.nan_to_num(own_alt, nan=0.0, posinf=20000.0, neginf=0.0)
         target_alt_s = torch.nan_to_num(target_alt, nan=0.0, posinf=20000.0, neginf=0.0)
@@ -971,18 +1017,20 @@ class CompetitionLoiterCurriculumEnv:
                 (self.n,), float(cfg.get("step_penalty", -0.002)), device=self.device
             )
 
-            reward += float(cfg.get("damage_scale", 12.0)) * total_target_damage
-            reward -= float(cfg.get("own_damage_scale", 18.0)) * total_own_damage
+            # fmt: off
+            reward += float(cfg.get("damage_scale", 12.0))*total_target_damage
+            reward -= float(cfg.get("own_damage_scale", 18.0))*total_own_damage
 
             cap = max(1.0, float(cfg.get("dwell_cap_steps", 20.0)))
             reward += (
                 float(cfg.get("dwell_scale", 0.03))
-                * (self.wez_streak.clamp(0, cap) / cap)
-                * inside.float()
+                *(self.wez_streak.clamp(0, cap)/cap)
+                *inside.float()
             )
             reward += float(cfg.get("phi_scale", 0.0)) * (
-                float(cfg.get("phi_gamma", 0.99)) * phi_now - self.prev_phi
+                float(cfg.get("phi_gamma", 0.99))*phi_now - self.prev_phi
             )
+            # fmt: on
 
             aim_scale = float(cfg.get("aim_scale", 0.0))
 
@@ -994,21 +1042,25 @@ class CompetitionLoiterCurriculumEnv:
                 aim_range_sigma = max(
                     1.0, float(cfg.get("aim_range_sigma_m", cfg.get("phi_range_sigma_m", 450.0)))
                 )
+                # fmt: off
                 aim_score = torch.exp(
-                    -torch.square(ata_s.abs() / aim_sigma)
-                    - torch.square((distance_s - aim_range_center) / aim_range_sigma)
+                    -torch.square(ata_s.abs()/aim_sigma)
+                    - torch.square((distance_s - aim_range_center)/aim_range_sigma)
                 )
-                reward += aim_scale * aim_score * distance_ok.float()
+                reward += aim_scale*aim_score*distance_ok.float()
+                # fmt: on
 
             inner_soft = float(cfg.get("inner_soft_m", 300.0))
             inner_violation = distance_ok & (distance_s < inner_soft)
+            # fmt: off
             inner_term = (
-                (inner_soft - distance_s).clamp_min(0.0) / max(1.0, inner_soft)
-            ).square() * (1.0 + (closing.clamp_min(0.0) / 150.0))
-            reward -= float(cfg.get("inner_penalty_scale", 0.65)) * inner_term
+                (inner_soft - distance_s).clamp_min(0.0)/max(1.0, inner_soft)
+            ).square()*(1.0 + (closing.clamp_min(0.0)/150.0))
+            reward -= float(cfg.get("inner_penalty_scale", 0.65))*inner_term
 
             hard_collision = distance_ok & (distance_s < float(cfg.get("hard_collision_m", 130.0)))
-            reward -= float(cfg.get("hard_collision_penalty", 8.0)) * hard_collision.float()
+            reward -= float(cfg.get("hard_collision_penalty", 8.0))*hard_collision.float()
+            # fmt: on
 
             crossed = (self.prev_x_tgt < -50.0) & (x_tgt > 50.0)
             bad_3_9 = (
@@ -1026,19 +1078,21 @@ class CompetitionLoiterCurriculumEnv:
                 & (ata_s.abs() > float(cfg.get("ahead_no_aim_ata_deg", 5.0)))
                 & (~inside)
             )
-            reward -= float(cfg.get("ahead_no_aim_penalty", 0.025)) * ahead_no_aim.float()
+            # fmt: off
+            reward -= float(cfg.get("ahead_no_aim_penalty", 0.025))*ahead_no_aim.float()
 
-            reward -= float(cfg.get("red_wez_penalty", 0.08)) * red_inside.float()
-            reward -= float(cfg.get("low_altitude_penalty", 2.0)) * (
+            reward -= float(cfg.get("red_wez_penalty", 0.08))*red_inside.float()
+            reward -= float(cfg.get("low_altitude_penalty", 2.0))*(
                 (own_alt_s < float(cfg.get("low_altitude_m", 1000.0))).float()
             )
-            reward -= float(cfg.get("action_rate_penalty", 0.001)) * (
+            reward -= float(cfg.get("action_rate_penalty", 0.001))*(
                 a - self.prev_policy_action
             ).square().sum(1)
 
-            reward += float(cfg.get("altitude_margin_scale", 0)) * self._altitude_margin(
+            reward += float(cfg.get("altitude_margin_scale", 0))*self._altitude_margin(
                 own_alt_s, cfg.get("altitude_floor_m", 1800), cfg.get("altitude_nominal_m", 7000)
             )
+            # fmt: on
 
             track_scale = float(cfg.get("track_scale", 0.0))
 
@@ -1048,11 +1102,13 @@ class CompetitionLoiterCurriculumEnv:
                 sy = max(1.0, float(cfg.get("track_y_sigma_m", 300.0)))
                 sz = max(1.0, float(cfg.get("track_z_sigma_m", 250.0)))
 
+                # fmt: off
                 track_score = torch.exp(
-                    -torch.square((x_tgt + trail) / sx)
-                    - torch.square(y_tgt / sy)
-                    - torch.square(z_tgt / sz)
+                    -torch.square((x_tgt + trail)/sx)
+                    - torch.square(y_tgt/sy)
+                    - torch.square(z_tgt/sz)
                 )
+                # fmt: on
                 track_score = torch.nan_to_num(track_score, nan=0.0, posinf=0.0, neginf=0.0).clamp(
                     0, 1
                 )
@@ -1064,12 +1120,14 @@ class CompetitionLoiterCurriculumEnv:
                 overshoot = distance_ok & (x_tgt > float(cfg.get("track_overshoot_x_m", -80.0)))
                 too_close = distance_ok & (distance_s < float(cfg.get("track_too_close_m", 260.0)))
 
-                reward += track_scale * track_score
-                reward -= float(cfg.get("track_closure_penalty", 0.03)) * torch.square(
-                    (closing.abs() - closure_limit).clamp_min(0.0) / closure_sigma
+                # fmt: off
+                reward += track_scale*track_score
+                reward -= float(cfg.get("track_closure_penalty", 0.03))*torch.square(
+                    (closing.abs() - closure_limit).clamp_min(0.0)/closure_sigma
                 )
-                reward -= float(cfg.get("track_overshoot_penalty", 0.08)) * overshoot.float()
-                reward -= float(cfg.get("track_too_close_penalty", 0.20)) * too_close.float()
+                reward -= float(cfg.get("track_overshoot_penalty", 0.08))*overshoot.float()
+                reward -= float(cfg.get("track_too_close_penalty", 0.20))*too_close.float()
+                # fmt: on
             else:
                 track_score = torch.zeros(self.n, device=self.device)
                 closure_violation = torch.zeros(self.n, dtype=torch.bool, device=self.device)
@@ -1084,19 +1142,21 @@ class CompetitionLoiterCurriculumEnv:
                 float(cfg.get("survival_bonus", 0)) + float(cfg.get("step_penalty", 0)),
                 device=self.device,
             )
-            reward += float(cfg.get("altitude_margin_scale", 0)) * self._altitude_margin(
+            # fmt: off
+            reward += float(cfg.get("altitude_margin_scale", 0))*self._altitude_margin(
                 own_alt_s, cfg.get("altitude_floor_m", 1200), cfg.get("altitude_nominal_m", 7000)
             )
             reward += (
-                float(cfg.get("alignment_scale", 0)) * alignment
-                + float(cfg.get("approach_scale", 0)) * alignment * approach
-                + float(cfg.get("rear_scale", 0)) * rear
-                + float(cfg.get("control_zone_scale", 0)) * alignment * rear * zone
-                + float(cfg.get("damage_scale", 0)) * (total_target_damage - total_own_damage)
+                float(cfg.get("alignment_scale", 0))*alignment
+                + float(cfg.get("approach_scale", 0))*alignment*approach
+                + float(cfg.get("rear_scale", 0))*rear
+                + float(cfg.get("control_zone_scale", 0))*alignment*rear*zone
+                + float(cfg.get("damage_scale", 0))*(total_target_damage - total_own_damage)
             )
-            reward -= float(cfg.get("low_altitude_penalty", 1)) * (
+            reward -= float(cfg.get("low_altitude_penalty", 1))*(
                 (own_alt_s < float(cfg.get("low_altitude_m", 800))).float()
             )
+            # fmt: on
             hard_collision = torch.zeros(self.n, dtype=torch.bool, device=self.device)
             inner_violation = torch.zeros_like(hard_collision)
             bad_3_9 = torch.zeros_like(hard_collision)
@@ -1122,10 +1182,12 @@ class CompetitionLoiterCurriculumEnv:
         )
 
         if self._is_gun_curriculum():
+            # fmt: off
             reward -= (
                 float(cfg.get("target_crash_without_damage_penalty", 6.0))
-                * target_crash_without_damage.float()
+                *target_crash_without_damage.float()
             )
+            # fmt: on
         unsafe_loss = hard_collision & bool(cfg.get("hard_collision_terminate", False))
         win = (self.target_health <= 0) & (self.own_health > 0)
         loss = (self.own_health <= 0) | own_crash | unsafe_loss
@@ -1175,7 +1237,9 @@ class CompetitionLoiterCurriculumEnv:
         self.prev_distance = torch.where(valid, distance_s, self.prev_distance)
         self.prev_x_tgt = torch.where(valid, x_tgt, self.prev_x_tgt)
         self.prev_phi = torch.where(valid, phi_now, self.prev_phi)
-        self.prev_policy_action = torch.where(valid[:, None], a, self.prev_policy_action)
+        # fmt: off
+        self.prev_policy_action = torch.where(valid[:,None], a, self.prev_policy_action)
+        # fmt: on
 
         if done.any():
             m = done
@@ -1285,10 +1349,14 @@ class CompetitionLoiterCurriculumEnv:
         self.active &= ~done
         base = self._base_observation()
         new_frame = self._make_frame(base, a)
-        new_history = torch.cat((self.history[:, 1:], new_frame[:, None, :]), 1)
-        self.history = torch.where(valid[:, None, None], new_history, self.history)
+        # fmt: off
+        new_history = torch.cat((self.history[:,1:], new_frame[:,None,:]), 1)
+        self.history = torch.where(valid[:,None,None], new_history, self.history)
+        # fmt: on
         obs = self.history.reshape(self.n, -1)
-        self.cached_observation = torch.where(valid[:, None], obs, self.cached_observation)
+        # fmt: off
+        self.cached_observation = torch.where(valid[:,None], obs, self.cached_observation)
+        # fmt: on
 
         return (
             self.cached_observation,

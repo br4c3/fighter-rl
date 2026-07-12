@@ -202,7 +202,9 @@ def sac_updates(
                 target_q2.forward_sequence(next_obs, next_action),
             )
             alpha = log_alpha.exp()
-            target = reward + cfg.gamma * (1.0 - done) * valid * (tq - alpha * next_logp)
+            # fmt: off
+            target = reward + cfg.gamma*(1.0 - done)*valid*(tq - alpha*next_logp)
+            # fmt: on
         q1_pred = q1.forward_sequence(obs, action)
         q2_pred = q2.forward_sequence(obs, action)
         mask = valid > 0
@@ -233,7 +235,9 @@ def sac_updates(
         )
         alpha = log_alpha.exp().detach()
         actor_mean = actor_logits[..., :4][mask].square().mean()
-        actor_loss = ((alpha * logp - q_pi)[mask]).mean() + cfg.action_mean_l2_coef * actor_mean
+        # fmt: off
+        actor_loss = ((alpha*logp - q_pi)[mask]).mean() + cfg.action_mean_l2_coef*actor_mean
+        # fmt: on
 
         if not bool(torch.isfinite(actor_loss)):
             continue
@@ -248,7 +252,9 @@ def sac_updates(
 
         actor_opt.step()
 
-        alpha_loss = -(log_alpha * (logp.detach() + cfg.target_entropy))[mask].mean()
+        # fmt: off
+        alpha_loss = -(log_alpha*(logp.detach() + cfg.target_entropy))[mask].mean()
+        # fmt: on
 
         if not bool(torch.isfinite(alpha_loss)):
             continue

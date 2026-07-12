@@ -81,9 +81,11 @@ class CompetitionDynamics(torch.nn.Module):
 
     def specific_force(self, state, aero, thrust_lbf, fuel_lbs=None):
         """Body force/mass, excluding gravity, Coriolis and centrifugal terms."""
-        vt, alpha, beta = state[:, 6], state[:, 7], state[:, 8]
+        # fmt: off
+        vt, alpha, beta = state[:,6], state[:,7], state[:,8]
         ca, sa, cb, sb = torch.cos(alpha), torch.sin(alpha), torch.cos(beta), torch.sin(beta)
-        D, C, L = aero[:, 0], aero[:, 1], aero[:, 2]
+        D, C, L = aero[:,0], aero[:,1], aero[:,2]
+        # fmt: on
         # JSBSim transforms native wind-axis aero forces [-Drag, Side, -Lift]
         # with mTw2b.  The Side contribution is therefore negative in body X/Z.
         # fmt: off
@@ -94,20 +96,23 @@ class CompetitionDynamics(torch.nn.Module):
 
         mass = self.mass_properties(fuel_lbs, state)[0]
 
-        return torch.stack((fx / mass, fy / mass, fz / mass), 1)
+        # fmt: off
+        return torch.stack((fx/mass, fy/mass, fz/mass), 1)
+        # fmt: on
 
     def forward(self, state, aero, thrust_lbf, fuel_lbs=None):
         """state12 derivative; aero columns are D,C,L,Lmom,Mmom,Nmom."""
         x = state
-        phi, theta, psi = x[:, 3], x[:, 4], x[:, 5]
-        vt, alpha, beta = x[:, 6], x[:, 7], x[:, 8]
-        p, q, r = x[:, 9], x[:, 10], x[:, 11]
+        # fmt: off
+        phi, theta, psi = x[:,3], x[:,4], x[:,5]
+        vt, alpha, beta = x[:,6], x[:,7], x[:,8]
+        p, q, r = x[:,9], x[:,10], x[:,11]
+
         sa, ca, sb, cb = torch.sin(alpha), torch.cos(alpha), torch.sin(beta), torch.cos(beta)
         sp, cp, st, ct = torch.sin(phi), torch.cos(phi), torch.sin(theta), torch.cos(theta)
         ss, cs = torch.sin(psi), torch.cos(psi)
         D, C, L, lm, mm, nm = aero.unbind(1)
 
-        # fmt: off
         u, v, w = vt*ca*cb, vt*sb, vt*sa*cb
 
         fx = -D*ca*cb - C*ca*sb + L*sa + thrust_lbf
@@ -140,7 +145,9 @@ class CompetitionDynamics(torch.nn.Module):
         mm = mm + thruster_rz*thrust_lbf
         # fmt: on
 
-        g = spherical_gravity(x[:, 2])
+        # fmt: off
+        g = spherical_gravity(x[:,2])
+        # fmt: on
 
         # fmt: off
         ud = r*v - q*w - g*st + fx/mass
@@ -168,7 +175,9 @@ class CompetitionDynamics(torch.nn.Module):
         coriolis_z = -2*(omega_bx*v - omega_by*u)
         # fmt: on
 
-        radius = x.new_tensor(self.earth_radius_ft) + x[:, 2]
+        # fmt: off
+        radius = x.new_tensor(self.earth_radius_ft) + x[:,2]
+        # fmt: on
         # JSBSim's local Down axis is itself constructed from
         # J2-gravity minus Omega x (Omega x sea-level-position).  Expressed in
         # that local frame, gravitational north and sea-level centrifugal

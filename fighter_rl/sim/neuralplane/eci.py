@@ -100,9 +100,11 @@ def body_to_ned_matrix(euler):
 
 
 def matrix_to_euler(r):
-    pitch = torch.asin((-r[:, 2, 0]).clamp(-1, 1))
-    roll = torch.atan2(r[:, 2, 1], r[:, 2, 2])
-    yaw = torch.atan2(r[:, 1, 0], r[:, 0, 0])
+    # fmt: off
+    pitch = torch.asin((-r[:,2,0]).clamp(-1, 1))
+    roll = torch.atan2(r[:,2,1], r[:,2,2])
+    yaw = torch.atan2(r[:,1,0], r[:,0,0])
+    # fmt: on
 
     return torch.stack((roll, pitch, yaw), 1)
 
@@ -122,15 +124,16 @@ def quaternion_to_matrix(q):
 
 def matrix_to_quaternion(r):
     # Branch-free candidates followed by selection; robust for all attitudes.
+    # fmt: off
     qabs = (
         torch.sqrt(
             torch.clamp(
                 torch.stack(
                     (
-                        1 + r[:, 0, 0] + r[:, 1, 1] + r[:, 2, 2],
-                        1 + r[:, 0, 0] - r[:, 1, 1] - r[:, 2, 2],
-                        1 - r[:, 0, 0] + r[:, 1, 1] - r[:, 2, 2],
-                        1 - r[:, 0, 0] - r[:, 1, 1] + r[:, 2, 2],
+                        1 + r[:,0,0] + r[:,1,1] + r[:,2,2],
+                        1 + r[:,0,0] - r[:,1,1] - r[:,2,2],
+                        1 - r[:,0,0] + r[:,1,1] - r[:,2,2],
+                        1 - r[:,0,0] - r[:,1,1] + r[:,2,2],
                     ),
                     1,
                 ),
@@ -139,42 +142,44 @@ def matrix_to_quaternion(r):
         )
         * 0.5
     )
+    # fmt: on
     w, x, y, z = qabs.unbind(1)
     eps = r.new_tensor(1e-9)
+    # fmt: off
     cand = torch.stack(
         (
             torch.stack(
                 (
                     w,
-                    (r[:, 2, 1] - r[:, 1, 2]) / (4 * w).clamp_min(eps),
-                    (r[:, 0, 2] - r[:, 2, 0]) / (4 * w).clamp_min(eps),
-                    (r[:, 1, 0] - r[:, 0, 1]) / (4 * w).clamp_min(eps),
+                    (r[:,2,1] - r[:,1,2])/(4*w).clamp_min(eps),
+                    (r[:,0,2] - r[:,2,0])/(4*w).clamp_min(eps),
+                    (r[:,1,0] - r[:,0,1])/(4*w).clamp_min(eps),
                 ),
                 1,
             ),
             torch.stack(
                 (
-                    (r[:, 2, 1] - r[:, 1, 2]) / (4 * x).clamp_min(eps),
+                    (r[:,2,1] - r[:,1,2])/(4*x).clamp_min(eps),
                     x,
-                    (r[:, 0, 1] + r[:, 1, 0]) / (4 * x).clamp_min(eps),
-                    (r[:, 0, 2] + r[:, 2, 0]) / (4 * x).clamp_min(eps),
+                    (r[:,0,1] + r[:,1,0])/(4*x).clamp_min(eps),
+                    (r[:,0,2] + r[:,2,0])/(4*x).clamp_min(eps),
                 ),
                 1,
             ),
             torch.stack(
                 (
-                    (r[:, 0, 2] - r[:, 2, 0]) / (4 * y).clamp_min(eps),
-                    (r[:, 0, 1] + r[:, 1, 0]) / (4 * y).clamp_min(eps),
+                    (r[:,0,2] - r[:,2,0])/(4*y).clamp_min(eps),
+                    (r[:,0,1] + r[:,1,0])/(4*y).clamp_min(eps),
                     y,
-                    (r[:, 1, 2] + r[:, 2, 1]) / (4 * y).clamp_min(eps),
+                    (r[:,1,2] + r[:,2,1])/(4*y).clamp_min(eps),
                 ),
                 1,
             ),
             torch.stack(
                 (
-                    (r[:, 1, 0] - r[:, 0, 1]) / (4 * z).clamp_min(eps),
-                    (r[:, 0, 2] + r[:, 2, 0]) / (4 * z).clamp_min(eps),
-                    (r[:, 1, 2] + r[:, 2, 1]) / (4 * z).clamp_min(eps),
+                    (r[:,1,0] - r[:,0,1])/(4*z).clamp_min(eps),
+                    (r[:,0,2] + r[:,2,0])/(4*z).clamp_min(eps),
+                    (r[:,1,2] + r[:,2,1])/(4*z).clamp_min(eps),
                     z,
                 ),
                 1,
@@ -182,6 +187,7 @@ def matrix_to_quaternion(r):
         ),
         1,
     )
+    # fmt: on
     idx = qabs.argmax(1)
     q = cand[torch.arange(len(r), device=r.device), idx]
 
@@ -205,12 +211,14 @@ def earth_rotation(angle):
 
 def gravity_j2(ecef):
     radius = torch.linalg.vector_norm(ecef, dim=1)
-    sinlat = ecef[:, 2] / radius
+    # fmt: off
+    sinlat = ecef[:,2]/radius
+    # fmt: on
     common = 1.5 * ecef.new_tensor(J2) * (ecef.new_tensor(A_FT) / radius).square()
     xy = 1 - 5 * sinlat.square()
     zz = 3 - 5 * sinlat.square()
     scale = -ecef.new_tensor(GM) / radius.pow(3)
 
     # fmt: off
-    return ecef*scale[:, None]*torch.stack((1 + common*xy, 1 + common*xy, 1 + common*zz), 1)
+    return ecef*scale[:,None]*torch.stack((1 + common*xy, 1 + common*xy, 1 + common*zz), 1)
     # fmt: on
