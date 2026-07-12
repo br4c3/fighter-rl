@@ -1,5 +1,3 @@
-"""Torch-native 1v1 task around CompetitionNeuralPlane; no per-env Python loop."""
-
 import torch
 from fighter_rl.sim.neuralplane import CompetitionNeuralPlane
 
@@ -23,8 +21,10 @@ class CompetitionBatchDogfight:
         self.step_ratio = int(step_ratio)
         self.max_steps = max_steps
         self.domain_randomization = bool(domain_randomization)
+
         if self.hz <= 0 or self.step_ratio <= 0:
             raise ValueError("hz and step_ratio must be positive")
+
         self.own = CompetitionNeuralPlane(num_envs, device, self.hz)
         self.target = CompetitionNeuralPlane(num_envs, device, self.hz)
         self.steps = torch.zeros(num_envs, dtype=torch.long, device=device)
@@ -77,6 +77,7 @@ class CompetitionBatchDogfight:
         self.steps.zero_()
         self.own_health.fill_(1)
         self.target_health.fill_(1)
+
         return self.observation()
 
     @staticmethod
@@ -91,14 +92,14 @@ class CompetitionBatchDogfight:
             st, ct = torch.sin(theta), torch.cos(theta)
             ss, cs = torch.sin(psi), torch.cos(psi)
             n, e, d = v.unbind(1)
-            return torch.stack(
-                (
-                    ct * cs * n + ct * ss * e - st * d,
-                    (sp * st * cs - cp * ss) * n + (sp * st * ss + cp * cs) * e + sp * ct * d,
-                    (cp * st * cs + sp * ss) * n + (cp * st * ss - sp * cs) * e + cp * ct * d,
-                ),
-                1,
-            )
+
+            # fmt: off
+            return torch.stack((
+                ct*cs*n + ct*ss*e - st*d,
+                (sp*st*cs - cp*ss)*n + (sp*st*ss + cp*cs)*e + sp*ct*d,
+                (cp*st*cs + sp*ss)*n + (cp*st*ss - sp*cs)*e + cp*ct*d,
+            ), 1)
+            # fmt: on
 
         own_los = ned_to_body(los, own)
         target_los = ned_to_body(-los, target)
@@ -110,6 +111,7 @@ class CompetitionBatchDogfight:
         aa = sign * aa_abs
         az = torch.rad2deg(torch.atan2(own_los[:, 1], own_los[:, 0]))
         el = -torch.rad2deg(torch.asin(own_los[:, 2].clamp(-1, 1)))
+
         return delta, distance, ata, aa, az, el
 
     def observation(self):
@@ -134,6 +136,7 @@ class CompetitionBatchDogfight:
         x[:, 14] = torch.where(in_wez, 1.0, -1.0)
         x[:, 15] = 2 * (1 - ata.abs() / 30).clamp(0, 1) * (1 - r / 3000).clamp(0, 1) - 1
         x = x.clamp(-1, 1)
+
         if self.obs_noise:
             x = (x + torch.randn_like(x) * self.obs_noise).clamp(-1, 1)
         return x
@@ -148,6 +151,7 @@ class CompetitionBatchDogfight:
         self.previous_action = low
         own_damage_total = torch.zeros(self.n, device=self.device)
         target_damage_total = torch.zeros(self.n, device=self.device)
+
         for _ in range(self.step_ratio):
             target_obs = self.target.observation41()
             ta = torch.zeros_like(low)
@@ -197,4 +201,5 @@ class CompetitionBatchDogfight:
             ),
             torch.zeros_like(reward),
         )
+
         return self.observation(), reward, done, {"distance_m": distance, "ata_deg": ata}

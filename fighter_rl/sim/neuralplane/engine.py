@@ -1,5 +1,3 @@
-"""Batched F100-PW-229 thrust tables and spool state."""
-
 import xml.etree.ElementTree as ET
 from collections import namedtuple
 from pathlib import Path
@@ -23,6 +21,7 @@ class CompetitionF100(torch.nn.Module):
         self.idle_n1 = float(root.findtext("idlen1"))
         self.idle_n2 = float(root.findtext("idlen2"))
         self.spool_up_s, self.spool_down_s = float(spool_up_s), float(spool_down_s)
+
         for function in root.findall("function"):
             name = function.attrib["name"].lower().replace("thrust", "")
             lines = [
@@ -59,6 +58,7 @@ class CompetitionF100(torch.nn.Module):
         dry = idle + mil_component * n2norm.square()
         temperature = standard_temperature(altitude_ft)
         corrected_tsfc = 0.74 * torch.sqrt(temperature / 389.7) * (0.84 + (1 - n2norm).square())
+
         return (dry * corrected_tsfc).clamp_min(self.mil**0.2 * 107.0)
 
     def thrust_from_n2(self, n2, throttle_cmd, mach, altitude_ft):
@@ -69,6 +69,7 @@ class CompetitionF100(torch.nn.Module):
         aug = self._map("aug", mach, altitude_ft) * self.maximum
         n2norm = ((n2 - self.idle_n2) / (100 - self.idle_n2)).clamp(0, 1)
         dry = idle + mil_component * n2norm.square()
+
         return torch.where(lever > 1, dry + (aug - dry) * (lever - 1).clamp(0, 1), dry)
 
     def forward(self, state, throttle_cmd, mach, altitude_ft):
@@ -95,6 +96,7 @@ class CompetitionF100(torch.nn.Module):
         def seek(current, target, up_rate, down_rate):
             delta = torch.where(target > current, up_rate * self.dt, -down_rate * self.dt)
             candidate = current + delta
+
             return torch.where(
                 target > current, torch.minimum(candidate, target), torch.maximum(candidate, target)
             )
@@ -115,4 +117,5 @@ class CompetitionF100(torch.nn.Module):
             lever > 1, torch.full_like(lever, 5000.0), torch.full_like(lever, 1000.0)
         )
         flow = seek(state.fuel_flow_pph, target_flow, accel, torch.full_like(lever, 10000.0))
+
         return EngineState(n1, n2, thrust, flow)

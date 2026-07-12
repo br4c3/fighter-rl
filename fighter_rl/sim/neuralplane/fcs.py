@@ -1,5 +1,3 @@
-"""Torch state-machine port of the flight-control system in supplied f16.xml."""
-
 from collections import namedtuple
 import torch
 
@@ -23,6 +21,7 @@ FCSState = namedtuple(
 
 def initial_fcs_state(batch, device=None, dtype=torch.float32):
     z = torch.zeros(batch, device=device, dtype=dtype)
+
     return FCSState(*(z.clone() for _ in range(11)))
 
 
@@ -33,12 +32,14 @@ def interp1(x, xp, fp):
     index = torch.searchsorted(xp, x.contiguous()).clamp(1, len(xp) - 1)
     x0, x1 = xp[index - 1], xp[index]
     y0, y1 = fp[index - 1], fp[index]
+
     return y0 + (x.clamp(xp[0], xp[-1]) - x0) * (y1 - y0) / (x1 - x0)
 
 
 def rate_limit(current, target, traverse_seconds, dt):
     # XML traverse time is from -1 to +1.
     delta = 2.0 * dt / traverse_seconds
+
     return current + (target - current).clamp(-delta, delta)
 
 
@@ -185,4 +186,5 @@ class CompetitionF16FCSTorch(torch.nn.Module):
             ),
             1,
         )
+
         return new_state, surfaces

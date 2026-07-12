@@ -1,5 +1,3 @@
-"""Deterministic open-loop inputs shared by both F-16 adapters."""
-
 import numpy as np
 
 
@@ -29,6 +27,7 @@ def _segments(*items):
         for end, value in items:
             if t < end:
                 return np.asarray(value, dtype=np.float32)
+
         return np.asarray(items[-1][1], dtype=np.float32)
 
     return action
@@ -99,7 +98,10 @@ MANEUVERS = {
 def select(names):
     if not names or names == ["all"]:
         return list(MANEUVERS.values())
+
     unknown = sorted(set(names) - set(MANEUVERS))
+
     if unknown:
         raise ValueError(f"Unknown maneuvers: {', '.join(unknown)}")
+
     return [MANEUVERS[name] for name in names]

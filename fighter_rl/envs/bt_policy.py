@@ -1,22 +1,3 @@
-"""Torch-native INHA_VIPER behavior-tree target policy.
-
-This module is the GPU-batched counterpart of the rebuilt Windows
-``AIP_DCS/AIP_BehaviorTree`` DLL.  It follows the active
-``BehaviorTree/INHA_VIPER.xml`` selector order and the C++ task implementations
-under ``BT_Content/Task``:
-
-* hard-deck climb recovery
-* defensive break turn
-* close-range pure pursuit
-* high yo-yo, barrel-roll attack, unloaded extension, low yo-yo
-* far/bad-angle lead pursuit
-* default lag pursuit
-
-The Windows DLL cannot be called from thousands of GPU environments, so the
-tree is translated into vectorized Torch.  The public training target is just
-``bt`` via ``bt_action``.
-"""
-
 import torch
 
 MODE_PURE = 0
@@ -57,6 +38,7 @@ def _unit(v, eps=1e-6):
 def _angle_deg(a, b):
     denom = a.norm(dim=1).clamp_min(1e-6) * b.norm(dim=1).clamp_min(1e-6)
     c = (a * b).sum(1) / denom
+
     return torch.rad2deg(torch.acos(c.clamp(-1.0, 1.0)))
 
 
@@ -77,14 +59,14 @@ def _uvw_ned(obs41):
     sp, cp = torch.sin(phi), torch.cos(phi)
     st, ct = torch.sin(theta), torch.cos(theta)
     ss, cs = torch.sin(psi), torch.cos(psi)
-    return torch.stack(
-        (
-            u * ct * cs + v * (sp * st * cs - cp * ss) + w * (cp * st * cs + sp * ss),
-            u * ct * ss + v * (sp * st * ss + cp * cs) + w * (cp * st * ss - sp * cs),
-            -u * st + v * sp * ct + w * cp * ct,
-        ),
-        1,
-    )
+
+    # fmt: off
+    return torch.stack((
+        u*ct*cs + v*(sp*st*cs - cp*ss) + w*(cp*st*cs + sp*ss),
+        u*ct*ss + v*(sp*st*ss + cp*cs) + w*(cp*st*ss - sp*cs),
+        -u*st + v*sp*ct + w*cp*ct,
+    ), 1)
+    # fmt: on
 
 
 def _bt_forward_up_right(obs41):
@@ -134,12 +116,14 @@ def _bt_forward_up_right(obs41):
         ),
         1,
     )
+
     return _unit(forward), _unit(up), _unit(right)
 
 
 def make_bt_state(num_envs, device, dtype=torch.float32):
     """Create mutable BT state for cooldown/current-task behavior."""
     device = torch.device(device)
+
     return {
         "time": torch.zeros(num_envs, device=device, dtype=dtype),
         "current_mode": torch.full((num_envs,), MODE_NONE, device=device, dtype=torch.long),
@@ -200,11 +184,14 @@ def _cooldown_ok(
 ):
     if state is None:
         return torch.ones_like(previous_mode, dtype=torch.bool)
+
     current = previous_mode == int(maneuver_mode)
+
     if urgent is None:
         urgent = torch.zeros_like(current)
     elapsed = now - state[last_key]
     never_used = state[last_key] < -1.0e8
+
     return current | urgent | never_used | (elapsed >= float(cooldown_s))
 
 
@@ -213,6 +200,7 @@ def _lead_vp(g):
     lead_distance = torch.where(g["los"] > 20.0, lead_distance * 1.3, lead_distance)
     lead_distance = torch.where(g["los"] < 5.0, lead_distance * 0.8, lead_distance)
     lead_distance = lead_distance.clamp(500.0, 2000.0)
+
     return g["target_pos"] + g["target_fwd"] * lead_distance[:, None], torch.full_like(
         g["distance"], MODE_LEAD, dtype=torch.long
     )
@@ -230,6 +218,7 @@ def _lag_vp(g):
         torch.full_like(g["distance"], MODE_LAG_CLOSE, dtype=torch.long),
         torch.full_like(g["distance"], MODE_LAG, dtype=torch.long),
     )
+
     return g["target_pos"] - g["target_fwd"] * lag_distance[:, None], mode
 
 
@@ -256,6 +245,7 @@ def _climb_vp(g):
         torch.full_like(g["distance"], MODE_CLIMB_EMERGENCY, dtype=torch.long),
         torch.full_like(g["distance"], MODE_RECOVER, dtype=torch.long),
     )
+
     return vp, mode
 
 
@@ -271,11 +261,13 @@ def _break_vp(g):
         + g["my_right"] * (break_sign * 6000.0)[:, None]
         + g["my_up"] * 300.0
     )
+
     return vp, torch.full_like(g["distance"], MODE_BREAK, dtype=torch.long)
 
 
 def _high_yoyo_vp(g):
     vp = g["target_pos"] + g["target_up"] * 500.0 - g["target_fwd"] * 100.0
+
     return vp, torch.full_like(g["distance"], MODE_HIGH_YOYO, dtype=torch.long)
 
 
@@ -289,6 +281,7 @@ def _barrel_roll_vp(g):
     perp_norm = _unit(perp)
     orbit_tangent = _cross(g["target_fwd"], perp_norm)
     vp = g["target_pos"] - g["target_fwd"] * 200.0 + perp_norm * 350.0 + orbit_tangent * 350.0
+
     return vp, torch.full_like(g["distance"], MODE_BARREL_ROLL, dtype=torch.long)
 
 
@@ -306,6 +299,7 @@ def _low_yoyo_vp(g):
         - g["target_up"] * dive_depth[:, None]
         + g["target_fwd"] * lead_dist[:, None]
     )
+
     return vp, torch.full_like(g["distance"], MODE_LOW_YOYO, dtype=torch.long)
 
 
@@ -320,6 +314,7 @@ def _apply_choice(
     take = (~selected) & condition
     vp = torch.where(take[:, None], candidate_vp, vp)
     mode = torch.where(take, candidate_mode, mode)
+
     return selected | take, vp, mode
 
 
@@ -467,6 +462,7 @@ def bt_empty_virtual_point(my_obs41):
     my_fwd, _, _ = _bt_forward_up_right(my_obs41)
     vp = my_pos + my_fwd * 10000.0
     mode = torch.full((my_obs41.shape[0],), MODE_EMPTY, device=my_obs41.device, dtype=torch.long)
+
     return vp, {"mode": mode, "vp": vp}
 
 
@@ -525,28 +521,21 @@ def vp_to_action(
     a[:, 1] = pitch.clamp(-1.0, 1.0)
     a[:, 2] = rudder.clamp(-1.0, 1.0)
     throttle_t = torch.as_tensor(throttle, device=my_obs41.device, dtype=my_obs41.dtype)
+
     if throttle_t.ndim == 0:
         throttle_t = throttle_t.expand(my_obs41.shape[0])
     a[:, 3] = throttle_t.clamp(0.0, 1.0)
+
     return a
 
 
-def point_los_to_action(
-    my_obs41,
-    vp_alt_up,
-    *,
-    target_speed_mps=270.0,
-):
+def point_los_to_action(my_obs41, vp_alt_up, *, target_speed_mps=270.0):
     """Compatibility wrapper; INHA_VIPER uses VP-to-stick control."""
+
     return vp_to_action(my_obs41, vp_alt_up, target_speed_mps=target_speed_mps)
 
 
-def los_to_action(
-    my_obs41,
-    target_obs41,
-    *,
-    target_speed_mps=270.0,
-):
+def los_to_action(my_obs41, target_obs41, *, target_speed_mps=270.0):
     return vp_to_action(my_obs41, _pos_alt_up(target_obs41), target_speed_mps=target_speed_mps)
 
 
@@ -563,6 +552,7 @@ def inha_viper_action(
     )
     action = vp_to_action(my_obs41, vp, throttle=1.0)
     info["vp"] = vp
+
     return action, info
 
 
@@ -579,13 +569,11 @@ def bt_action(
     )
 
 
-def bt_empty_action(
-    my_obs41,
-    target_obs41=None,
-):
+def bt_empty_action(my_obs41, target_obs41=None):
     del target_obs41
     vp, info = bt_empty_virtual_point(my_obs41)
     action = vp_to_action(my_obs41, vp, throttle=1.0)
+
     return action, info
 
 

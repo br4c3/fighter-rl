@@ -1,5 +1,3 @@
-"""Batched WGS84/ECI helpers matching JSBSim's propagation frames."""
-
 import torch
 
 A_FT = 20925646.32546
@@ -16,7 +14,14 @@ def geodetic_to_ecef(lat, lon, alt):
     sl, cl = torch.sin(lat), torch.cos(lat)
     so, co = torch.sin(lon), torch.cos(lon)
     n = a / torch.sqrt(1 - e2 * sl.square())
-    return torch.stack(((n + alt) * cl * co, (n + alt) * cl * so, (n * (1 - e2) + alt) * sl), 1)
+
+    # fmt: off
+    return torch.stack((
+        (n + alt)*cl*co,
+        (n + alt)*cl*so,
+        (n*(1 - e2) + alt)*sl,
+    ), 1)
+    # fmt: on
 
 
 def geocentric_to_ecef(lat_gc, lon, alt):
@@ -26,7 +31,10 @@ def geocentric_to_ecef(lat_gc, lon, alt):
     so, co = torch.sin(lon), torch.cos(lon)
     sea_level_radius = 1 / torch.sqrt(cl.square() / a.square() + sl.square() / b.square())
     radius = sea_level_radius + alt
-    return torch.stack((radius * cl * co, radius * cl * so, radius * sl), 1)
+
+    # fmt: off
+    return torch.stack((radius*cl*co, radius*cl*so, radius*sl), 1)
+    # fmt: on
 
 
 def ecef_to_geocentric(r):
@@ -40,6 +48,7 @@ def ecef_to_geocentric(r):
     sl, cl = torch.sin(lat), torch.cos(lat)
     sea_level_radius = 1 / torch.sqrt(cl.square() / a.square() + sl.square() / b.square())
     alt = radius - sea_level_radius
+
     return lat, lon, alt
 
 
@@ -51,26 +60,28 @@ def ecef_to_geodetic(r):
     lon = torch.atan2(y, x)
     p = torch.sqrt(x.square() + y.square())
     lat = torch.atan2(z, p * (1 - e2))
+
     for _ in range(5):
         n = a / torch.sqrt(1 - e2 * torch.sin(lat).square())
         alt = p / torch.cos(lat).clamp_min(1e-8) - n
         lat = torch.atan2(z, p * (1 - e2 * n / (n + alt)))
     n = a / torch.sqrt(1 - e2 * torch.sin(lat).square())
     alt = p / torch.cos(lat).clamp_min(1e-8) - n
+
     return lat, lon, alt
 
 
 def ned_to_ecef_matrix(lat, lon):
     sl, cl, so, co = torch.sin(lat), torch.cos(lat), torch.sin(lon), torch.cos(lon)
     z = torch.zeros_like(lat)
-    return torch.stack(
-        (
-            torch.stack((-sl * co, -so, -cl * co), 1),
-            torch.stack((-sl * so, co, -cl * so), 1),
-            torch.stack((cl, z, -sl), 1),
-        ),
-        1,
-    )
+
+    # fmt: off
+    return torch.stack((
+        torch.stack((-sl*co, -so, -cl*co), 1),
+        torch.stack((-sl*so, co, -cl*so), 1),
+        torch.stack((cl, z, -sl), 1),
+    ), 1)
+    # fmt: on
 
 
 def body_to_ned_matrix(euler):
@@ -78,40 +89,35 @@ def body_to_ned_matrix(euler):
     sp, cp = torch.sin(phi), torch.cos(phi)
     st, ct = torch.sin(theta), torch.cos(theta)
     ss, cs = torch.sin(psi), torch.cos(psi)
-    return torch.stack(
-        (
-            torch.stack((ct * cs, sp * st * cs - cp * ss, cp * st * cs + sp * ss), 1),
-            torch.stack((ct * ss, sp * st * ss + cp * cs, cp * st * ss - sp * cs), 1),
-            torch.stack((-st, sp * ct, cp * ct), 1),
-        ),
-        1,
-    )
+
+    # fmt: off
+    return torch.stack((
+        torch.stack((ct*cs, sp*st*cs - cp*ss, cp*st*cs + sp*ss), 1),
+        torch.stack((ct*ss, sp*st*ss + cp*cs, cp*st*ss - sp*cs), 1),
+        torch.stack((-st, sp*ct, cp*ct), 1),
+    ), 1)
+    # fmt: on
 
 
 def matrix_to_euler(r):
     pitch = torch.asin((-r[:, 2, 0]).clamp(-1, 1))
     roll = torch.atan2(r[:, 2, 1], r[:, 2, 2])
     yaw = torch.atan2(r[:, 1, 0], r[:, 0, 0])
+
     return torch.stack((roll, pitch, yaw), 1)
 
 
 def quaternion_to_matrix(q):
     w, x, y, z = q.unbind(1)
     two = 2.0
-    return torch.stack(
-        (
-            torch.stack(
-                (1 - two * (y * y + z * z), two * (x * y - z * w), two * (x * z + y * w)), 1
-            ),
-            torch.stack(
-                (two * (x * y + z * w), 1 - two * (x * x + z * z), two * (y * z - x * w)), 1
-            ),
-            torch.stack(
-                (two * (x * z - y * w), two * (y * z + x * w), 1 - two * (x * x + y * y)), 1
-            ),
-        ),
-        1,
-    )
+
+    # fmt: off
+    return torch.stack((
+        torch.stack((1 - two*(y*y + z*z), two*(x*y - z*w), two*(x*z + y*w)), 1),
+        torch.stack((two*(x*y + z*w), 1 - two*(x*x + z*z), two*(y*z - x*w)), 1),
+        torch.stack((two*(x*z - y*w), two*(y*z + x*w), 1 - two*(x*x + y*y)), 1),
+    ), 1)
+    # fmt: on
 
 
 def matrix_to_quaternion(r):
@@ -178,6 +184,7 @@ def matrix_to_quaternion(r):
     )
     idx = qabs.argmax(1)
     q = cand[torch.arange(len(r), device=r.device), idx]
+
     return q / torch.linalg.vector_norm(q, dim=1, keepdim=True).clamp_min(eps)
 
 
@@ -185,8 +192,14 @@ def earth_rotation(angle):
     c, s = torch.cos(angle), torch.sin(angle)
     z = torch.zeros_like(c)
     o = torch.ones_like(c)
+
     return torch.stack(
-        (torch.stack((c, s, z), 1), torch.stack((-s, c, z), 1), torch.stack((z, z, o), 1)), 1
+        (
+            torch.stack((c, s, z), 1),
+            torch.stack((-s, c, z), 1),
+            torch.stack((z, z, o), 1),
+        ),
+        1,
     )
 
 
@@ -197,6 +210,7 @@ def gravity_j2(ecef):
     xy = 1 - 5 * sinlat.square()
     zz = 3 - 5 * sinlat.square()
     scale = -ecef.new_tensor(GM) / radius.pow(3)
-    return (
-        ecef * scale[:, None] * torch.stack((1 + common * xy, 1 + common * xy, 1 + common * zz), 1)
-    )
+
+    # fmt: off
+    return ecef*scale[:, None]*torch.stack((1 + common*xy, 1 + common*xy, 1 + common*zz), 1)
+    # fmt: on

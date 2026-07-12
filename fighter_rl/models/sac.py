@@ -1,10 +1,3 @@
-"""Fast SAC actor/critic modules aligned to AIP model profiles.
-
-For AIP lightweight inference, SAC bundles use the actor side of the RLModule.
-The Q networks are necessary for fast SAC training, but they are not used by
-``RLActionProvider`` during submission-time inference.
-"""
-
 from collections import namedtuple
 
 import torch
@@ -83,6 +76,7 @@ class AIPSACProfile:
     def network_spec(self):
         if not self.use_lstm:
             return None
+
         return {
             "type": "sequence_v1",
             "actor": {
@@ -169,6 +163,7 @@ PROFILES = {
 
 def get_sac_profile(variant):
     key = str(variant).strip().lower()
+
     if key not in PROFILES:
         raise ValueError(
             f"Unsupported fast SAC variant: {variant!r}. "
@@ -179,10 +174,12 @@ def get_sac_profile(variant):
 
 def mlp(sizes, activation=nn.ReLU, *, output_activation=None):
     layers = []
+
     for i in range(len(sizes) - 1):
         layers.append(nn.Linear(sizes[i], sizes[i + 1]))
         is_last = i == len(sizes) - 2
         act = output_activation if is_last else activation
+
         if act is not None:
             layers.append(act())
     return nn.Sequential(*layers)
@@ -195,6 +192,7 @@ class FastAIPSACActor(nn.Module):
     def __init__(self, profile):
         super().__init__()
         self.profile = get_sac_profile(profile) if isinstance(profile, str) else profile
+
         if self.profile.use_lstm:
             pre = [self.profile.obs_dim, *self.profile.actor_pre_hiddens]
             self.pre = mlp(pre)
@@ -219,6 +217,7 @@ class FastAIPSACActor(nn.Module):
         # keeping the exact AIP/RLlib actor output shape.
         nn.init.orthogonal_(self.head.weight, gain=0.01)
         nn.init.zeros_(self.head.bias)
+
         with torch.no_grad():
             # Policy actions use [-1, 1], while CompetitionLoiterCurriculumEnv
             # maps the throttle channel by (a + 1) / 2 before calling the
@@ -240,27 +239,33 @@ class FastAIPSACActor(nn.Module):
     def initial_state(self, batch_size, device=None):
         if not self.recurrent:
             return None
+
         dev = torch.device(device) if device is not None else next(self.parameters()).device
         h = torch.zeros(1, int(batch_size), self.profile.lstm_cell_size, device=dev)
         c = torch.zeros_like(h)
+
         return h, c
 
     @staticmethod
     def detach_state(state):
         if state is None:
             return None
+
         return state[0].detach(), state[1].detach()
 
     @staticmethod
     def mask_state(state, active):
         if state is None:
             return None
+
         mask = active.reshape(1, -1, 1).to(dtype=state[0].dtype, device=state[0].device)
+
         return state[0] * mask, state[1] * mask
 
     def forward_step(self, obs, state=None):
         x = self.pre(obs)
         next_state = state
+
         if self.recurrent:
             if state is None:
                 state = self.initial_state(obs.shape[0], obs.device)
@@ -268,24 +273,28 @@ class FastAIPSACActor(nn.Module):
             x, next_state = self.lstm(x.unsqueeze(0), state)
             x = x.squeeze(0)
         x = self.post(x)
+
         return SACOutput(self.head(x), next_state)
 
     def forward_sequence(self, obs, state=None):
         t, b, d = obs.shape
         x = self.pre(obs.reshape(t * b, d)).reshape(t, b, -1)
         next_state = state
+
         if self.recurrent:
             if state is None:
                 state = self.initial_state(b, obs.device)
             assert self.lstm is not None
             x, next_state = self.lstm(x, state)
         x = self.post(x.reshape(t * b, -1)).reshape(t, b, -1)
+
         return SACOutput(self.head(x), next_state)
 
     @staticmethod
     def distribution(logits, log_std_min=-5.0, log_std_max=1.0, mean_clip=10.0):
         mean, log_std = logits.split(ACTION_DIM, dim=-1)
         mean = torch.nan_to_num(mean, nan=0.0, posinf=mean_clip, neginf=-mean_clip)
+
         if mean_clip > 0:
             mean = mean.clamp(-mean_clip, mean_clip)
         log_std = torch.nan_to_num(
@@ -294,19 +303,24 @@ class FastAIPSACActor(nn.Module):
             posinf=log_std_max,
             neginf=log_std_min,
         ).clamp(log_std_min, log_std_max)
+
         return torch.distributions.Normal(mean, log_std.exp())
 
     @staticmethod
     def _squash(raw_action, logp=None):
         action = torch.tanh(raw_action)
+
         if logp is None:
             return action, None
+
         correction = torch.log(1 - action.square() + 1e-6).sum(-1)
+
         return action, logp - correction
 
     def sample_step(self, obs, state=None, deterministic=False, return_logits=False):
         out = self.forward_step(obs, state)
         dist = self.distribution(out.logits)
+
         if deterministic:
             raw = dist.mean
         else:
@@ -314,8 +328,10 @@ class FastAIPSACActor(nn.Module):
         raw = torch.nan_to_num(raw, nan=0.0, posinf=1.0, neginf=-1.0)
         logp = dist.log_prob(raw).sum(-1)
         action, logp = self._squash(raw, logp)
+
         if return_logits:
             return action, logp, out.state, out.logits
+
         return action, logp, out.state
 
     def sample_sequence(self, obs, state=None, deterministic=False, return_logits=False):
@@ -325,8 +341,10 @@ class FastAIPSACActor(nn.Module):
         raw = torch.nan_to_num(raw, nan=0.0, posinf=1.0, neginf=-1.0)
         logp = dist.log_prob(raw).sum(-1)
         action, logp = self._squash(raw, logp)
+
         if return_logits:
             return action, logp, out.state, out.logits
+
         return action, logp, out.state
 
 
@@ -335,6 +353,7 @@ class FastAIPSACCritic(nn.Module):
         super().__init__()
         self.profile = get_sac_profile(profile) if isinstance(profile, str) else profile
         input_dim = self.profile.obs_dim + ACTION_DIM
+
         if self.profile.use_lstm:
             self.pre = mlp([input_dim, *self.profile.critic_pre_hiddens])
             self.lstm = nn.LSTM(self.profile.critic_pre_hiddens[-1], self.profile.lstm_cell_size)
@@ -354,25 +373,30 @@ class FastAIPSACCritic(nn.Module):
     def initial_state(self, batch_size, device):
         if not self.profile.use_lstm:
             return None
+
         h = torch.zeros(1, int(batch_size), self.profile.lstm_cell_size, device=device)
         c = torch.zeros_like(h)
+
         return h, c
 
     def forward_sequence(self, obs, action, state=None):
         t, b, _ = obs.shape
         x = torch.cat([obs, action], dim=-1)
         x = self.pre(x.reshape(t * b, -1)).reshape(t, b, -1)
+
         if self.profile.use_lstm:
             if state is None:
                 state = self.initial_state(b, obs.device)
             assert self.lstm is not None
             x, _ = self.lstm(x, state)
         x = self.post(x.reshape(t * b, -1)).reshape(t, b, -1)
+
         return self.q(x).squeeze(-1)
 
     def forward_flat(self, obs, action):
         x = torch.cat([obs, action], dim=-1)
         x = self.pre(x)
+
         if self.profile.use_lstm:
             # One-step critic fallback for diagnostics; sequence training uses
             # forward_sequence so recurrent state remains explicit.
@@ -380,6 +404,7 @@ class FastAIPSACCritic(nn.Module):
             x, _ = self.lstm(x.unsqueeze(0), self.initial_state(x.shape[0], x.device))
             x = x.squeeze(0)
         x = self.post(x)
+
         return self.q(x).squeeze(-1)
 
 
@@ -404,6 +429,7 @@ def rllib_sac_actor_weight_dict(actor, current_state=None):
 
     state = actor.state_dict()
     const = np.asarray([20.0], dtype=np.float32)
+
     if actor.profile.use_lstm:
         return {
             "pi_encoder.tokenizer.net.mlp.0.weight": _np(state["pre.0.weight"]),
@@ -441,11 +467,14 @@ def rllib_sac_actor_weight_dict(actor, current_state=None):
     ]
     used = set()
     mapped = {}
+
     for _, value, tokens in expected:
         matches = []
+
         for key, cur in current_state.items():
             if key in used:
                 continue
+
             if all(token in key for token in tokens) and tuple(np.asarray(cur).shape) == tuple(
                 value.shape
             ):

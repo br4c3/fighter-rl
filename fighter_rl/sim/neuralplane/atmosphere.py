@@ -1,5 +1,3 @@
-"""Tensor-only JSBSim-compatible atmosphere and spherical gravity helpers."""
-
 import torch
 
 EARTH_RADIUS_FT = 6356766.0 / 0.3048
@@ -31,6 +29,7 @@ def standard_atmosphere(altitude_ft):
     pressure = torch.where(h < h11, p_trop, p_strat)
     density = pressure / (R_DRY * temperature)
     sound_speed = torch.sqrt(GAMMA * R_DRY * temperature)
+
     return density, sound_speed
 
 
@@ -38,6 +37,7 @@ def standard_temperature(altitude_ft):
     """ISA temperature in Rankine for the competition altitude envelope."""
     h = altitude_ft * EARTH_RADIUS_FT / (EARTH_RADIUS_FT + altitude_ft)
     lapse = (389.97 - SL_TEMPERATURE_R) / 36089.2388
+
     return torch.where(h < 36089.2388, SL_TEMPERATURE_R + lapse * h, altitude_ft.new_tensor(389.97))
 
 
@@ -53,6 +53,7 @@ def standard_pressure(altitude_ft):
         altitude_ft.new_tensor(SL_TEMPERATURE_R) / t11
     ).pow(exponent)
     p_strat = p11 * torch.exp(-G_ISA * (h - h11) / (R_DRY * t11))
+
     return torch.where(h < h11, p_trop, p_strat)
 
 
@@ -77,6 +78,7 @@ def calibrated_airspeed(true_speed_fps, altitude_ft):
     iterate_coeff = (0.5 * (gamma + 1)) ** (-0.25 * (2 / ((gamma - 1) / gamma))) * (
         0.5 * (gamma + 1) / gamma
     ) ** (-0.5 * (0.5 * 2 / (gamma - 1)))
+
     for _ in range(10):
         sup = iterate_coeff * torch.sqrt(
             A
@@ -97,4 +99,5 @@ def spherical_gravity(altitude_ft):
     """
     radius = altitude_ft.new_tensor(20_909_000.0)
     g_sea = altitude_ft.new_tensor(32.22148)
+
     return g_sea * (radius / (radius + altitude_ft)).square()

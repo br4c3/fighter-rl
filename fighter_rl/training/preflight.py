@@ -1,14 +1,3 @@
-"""Validate the restored fast parallel training contract.
-
-This is a cheap preflight for the server:
-
-* AIP profile -> expected observation dimension.
-* CompetitionLoiterCurriculumEnv -> actual observation dimension.
-* BT target name is accepted.
-* Fast policy -> action/value tensor shapes.
-* RLlib export key shapes -> known AIP lightweight-bundle key names.
-"""
-
 import json
 
 import torch
@@ -44,6 +33,7 @@ def main():
     is_sac = cfg.variant.startswith("sac_")
     torch.manual_seed(cfg.seed)
     profile = get_sac_profile(cfg.variant) if is_sac else get_profile(cfg.variant)
+
     report = {
         "variant": cfg.variant,
         "expected_obs_dim": profile.obs_dim,
@@ -51,10 +41,13 @@ def main():
         "include_previous_action": profile.include_previous_action,
         "target_maneuver": cfg.target_maneuver,
     }
+
     device = torch.device(cfg.device)
     model = FastAIPSACActor(profile).to(device) if is_sac else FastAIPPPOPolicy(profile).to(device)
+
     obs = torch.zeros(num_envs, profile.obs_dim, device=device)
     state = model.initial_state(num_envs, device)
+
     with torch.no_grad():
         if is_sac:
             action, logp, next_state = model.sample_step(obs, state)
@@ -62,6 +55,7 @@ def main():
             value = torch.zeros(num_envs, device=device)
         else:
             action, raw, logp, value, next_state = model.sample_step(obs, state)
+
     report["policy_shapes"] = {
         "action": list(action.shape),
         "raw_action": list(raw.shape),
@@ -69,9 +63,11 @@ def main():
         "value": list(value.shape),
         "has_recurrent_state": next_state is not None,
     }
+
     if is_sac:
         critic = FastAIPSACCritic(profile).to(device)
         q = critic.forward_sequence(obs[None, :, :], action[None, :, :])
+
         report["critic_shapes"] = {"q_sequence": list(q.shape)}
         report["rllib_weight_shapes"] = {
             key: list(value.shape) for key, value in rllib_sac_actor_weight_dict(model).items()
@@ -83,6 +79,7 @@ def main():
 
     if not skip_env:
         stage = load_stages(schedule=cfg.stage_schedule)[stage_index]
+
         env = CompetitionLoiterCurriculumEnv(
             stage,
             num_envs=num_envs,
@@ -92,11 +89,14 @@ def main():
             include_previous_action=profile.include_previous_action,
         )
         env_obs = env.reset()
+
         if env_obs.shape[-1] != profile.obs_dim:
             raise RuntimeError(
                 f"env obs_dim={env_obs.shape[-1]} does not match profile obs_dim={profile.obs_dim}"
             )
+
         next_obs, reward, done, info = env.step(action)
+
         required_info = {
             "valid",
             "active",
@@ -107,9 +107,12 @@ def main():
             "ep_min_own_alt",
             "ep_min_target_alt",
         }
+
         missing = sorted(required_info - set(info))
+
         if missing:
             raise RuntimeError(f"env info is missing safety keys: {missing}")
+
         report["env_shapes"] = {
             "reset_obs": list(env_obs.shape),
             "next_obs": list(next_obs.shape),
@@ -132,6 +135,7 @@ def main():
         }
 
     print(json.dumps(report, indent=2, ensure_ascii=False))
+
     return 0
 
 

@@ -1,5 +1,3 @@
-"""Vectorized evaluator for all aerodynamic products/tables in competition f16.xml."""
-
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import torch
@@ -12,6 +10,7 @@ def _interp1(x, grid, values):
     x0, x1 = grid[i - 1], grid[i]
     y0, y1 = values[i - 1], values[i]
     xc = x.clamp(grid[0], grid[-1])
+
     return y0 + (xc - x0) * (y1 - y0) / (x1 - x0)
 
 
@@ -23,6 +22,7 @@ def _interp2(row, col, rows, cols, values):
     tc = ((col.clamp(cols[0], cols[-1]) - c0) / (c1 - c0)).clamp(0, 1)
     v00, v01 = values[ir - 1, ic - 1], values[ir - 1, ic]
     v10, v11 = values[ir, ic - 1], values[ir, ic]
+
     return (v00 * (1 - tc) + v01 * tc) * (1 - tr) + (v10 * (1 - tc) + v11 * tc) * tr
 
 
@@ -36,10 +36,12 @@ class CompetitionXMLAero(torch.nn.Module):
         aero = ET.parse(xml_path).getroot().find("aerodynamics")
         self.specs = {name: [] for name in self.AXES}
         table_number = 0
+
         for axis in aero.findall("axis"):
             for function in axis.findall("function"):
                 product = function.find("product")
                 factors = []
+
                 for child in product:
                     if child.tag == "property":
                         factors.append(("property", (child.text or "").strip()))
@@ -55,6 +57,7 @@ class CompetitionXMLAero(torch.nn.Module):
                         ]
                         prefix = f"table_{table_number}"
                         table_number += 1
+
                         if len(independent) == 1:
                             array = torch.tensor(lines, dtype=torch.float32)
                             self.register_buffer(prefix + "_x", array[:, 0].contiguous())
@@ -69,15 +72,19 @@ class CompetitionXMLAero(torch.nn.Module):
                             factors.append(("table2", (prefix, independent[0], independent[1])))
                         else:
                             raise ValueError("only 1D/2D tables are present in competition XML")
+
                 self.specs[axis.attrib["name"]].append((function.attrib.get("name", ""), factors))
 
     def forward(self, properties):
         reference = next(iter(properties.values()))
         outputs = []
+
         for axis in self.AXES:
             total = torch.zeros_like(reference)
+
             for _name, factors in self.specs[axis]:
                 value = torch.ones_like(reference)
+
                 for kind, item in factors:
                     if kind == "property":
                         value = value * properties[item]
@@ -107,9 +114,11 @@ class CompetitionXMLAero(torch.nn.Module):
         """Named XML function outputs for module-level diagnostics."""
         reference = next(iter(properties.values()))
         result = {}
+
         for axis in self.AXES:
             for name, factors in self.specs[axis]:
                 value = torch.ones_like(reference)
+
                 for kind, item in factors:
                     if kind == "property":
                         value = value * properties[item]
@@ -154,6 +163,7 @@ def airborne_properties(state12, surfaces_deg, speedbrake_deg=None, gear_pos=Non
         (-tef_control - aileron_speed_comp).clamp(-1, 1)
         + (tef_control - aileron_speed_comp).clamp(-1, 1)
     ) * 1.4324
+
     return {
         "aero/alpha-rad": alpha,
         "aero/beta-rad": beta,

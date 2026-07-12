@@ -1,22 +1,3 @@
-"""AIP-profile PPO policies for fast GPU-batched NeuralPlane training.
-
-The goal of this module is deliberately narrow:
-
-* train fast with plain PyTorch tensors, not RLlib sampling;
-* keep the policy tensor shapes compatible with AIP/RLlib PPO bundles;
-* make the observation contract impossible to mix up.
-
-Observed AIP bundle contracts:
-
-* PPO-MLP  : tactical16 stacked 4 frames + previous action per frame = 80 dims.
-* PPO-LSTM : tactical16 + previous action = 20 dims, then RLlib LSTM(64).
-
-RLlib's PPO Gaussian head for Box(4) actions emits 8 values
-(`mean[4] + log_std[4]`).  The earlier fast trainer used a separate global
-`log_std` parameter, which trains fine as a standalone `.pt`, but is not a
-clean shape match for the lightweight bundle.  This file fixes that.
-"""
-
 from collections import namedtuple
 
 import torch
@@ -93,6 +74,7 @@ class AIPPolicyProfile:
             "head_fcnet_activation": "relu",
             "vf_share_layers": True,
         }
+
         if self.use_lstm:
             payload.update(
                 {
@@ -138,6 +120,7 @@ PROFILES = {
 
 def get_profile(variant):
     key = str(variant).strip().lower()
+
     if key not in PROFILES:
         raise ValueError(
             f"Unsupported fast PPO variant: {variant!r}. "
@@ -162,6 +145,7 @@ class FastAIPPPOPolicy(nn.Module):
             nn.Linear(h1, h2),
             nn.ReLU(),
         )
+
         if self.profile.use_lstm:
             self.lstm = nn.LSTM(h2, self.profile.lstm_cell_size)
             head_in = self.profile.lstm_cell_size
@@ -178,6 +162,7 @@ class FastAIPPPOPolicy(nn.Module):
         # shape while making stage-0 survival learnable.
         nn.init.orthogonal_(self.pi.weight, gain=0.01)
         nn.init.zeros_(self.pi.bias)
+
         with torch.no_grad():
             # Policy actions are in [-1, 1], but the fast environment maps the
             # throttle channel to simulator throttle by (a + 1) / 2.  A zero
@@ -203,37 +188,37 @@ class FastAIPPPOPolicy(nn.Module):
     def initial_state(self, batch_size, device=None):
         if not self.recurrent:
             return None
+
         dev = torch.device(device) if device is not None else next(self.parameters()).device
         h = torch.zeros(1, int(batch_size), self.profile.lstm_cell_size, device=dev)
         c = torch.zeros_like(h)
+
         return h, c
 
     @staticmethod
-    def detach_state(
-        state,
-    ):
+    def detach_state(state):
         if state is None:
             return None
+
         return state[0].detach(), state[1].detach()
 
     @staticmethod
     def mask_state(state, active):
         if state is None:
             return None
+
         mask = active.reshape(1, -1, 1).to(dtype=torch.bool, device=state[0].device)
         h = torch.nan_to_num(state[0], nan=0.0, posinf=0.0, neginf=0.0)
         c = torch.nan_to_num(state[1], nan=0.0, posinf=0.0, neginf=0.0)
+
         return torch.where(mask, h, torch.zeros_like(h)), torch.where(mask, c, torch.zeros_like(c))
 
-    def forward_step(
-        self,
-        obs,
-        state=None,
-    ):
+    def forward_step(self, obs, state=None):
         obs = torch.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
         features = self.encoder(obs)
         features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
         next_state = state
+
         if self.recurrent:
             if state is None:
                 state = self.initial_state(obs.shape[0], obs.device)
@@ -250,13 +235,10 @@ class FastAIPPPOPolicy(nn.Module):
         value = self.vf(features).squeeze(-1)
         logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
         value = torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
+
         return PolicyOutput(logits, value, next_state)
 
-    def forward_sequence(
-        self,
-        obs_seq,
-        state=None,
-    ):
+    def forward_sequence(self, obs_seq, state=None):
         """Run a full rollout sequence.
 
         Args:
@@ -264,12 +246,15 @@ class FastAIPPPOPolicy(nn.Module):
             state: Optional recurrent state shaped [1, B, H].
         """
         t, b, d = obs_seq.shape
+
         if d != self.obs_dim:
             raise ValueError(f"Expected obs_dim={self.obs_dim}, got {d}")
+
         obs_seq = torch.nan_to_num(obs_seq, nan=0.0, posinf=1.0, neginf=-1.0)
         features = self.encoder(obs_seq.reshape(t * b, d)).reshape(t, b, -1)
         features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
         next_state = state
+
         if self.recurrent:
             if state is None:
                 state = self.initial_state(b, obs_seq.device)
@@ -285,6 +270,7 @@ class FastAIPPPOPolicy(nn.Module):
         value = self.vf(features).squeeze(-1)
         logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
         value = torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
+
         return PolicyOutput(logits, value, next_state)
 
     @staticmethod
@@ -297,6 +283,7 @@ class FastAIPPPOPolicy(nn.Module):
     ):
         mean, log_std = logits.split(ACTION_DIM, dim=-1)
         mean = torch.nan_to_num(mean, nan=0.0, posinf=mean_clip, neginf=-mean_clip)
+
         if mean_clip > 0:
             mean = mean.clamp(-mean_clip, mean_clip)
         log_std = torch.nan_to_num(
@@ -305,6 +292,7 @@ class FastAIPPPOPolicy(nn.Module):
             posinf=log_std_max,
             neginf=log_std_min,
         ).clamp(log_std_min, log_std_max)
+
         return torch.distributions.Normal(mean, log_std.exp())
 
     def sample_step(
@@ -327,16 +315,14 @@ class FastAIPPPOPolicy(nn.Module):
         raw_action = torch.nan_to_num(raw_action, nan=0.0, posinf=1.0, neginf=-1.0)
         logp = dist.log_prob(raw_action).sum(-1)
         env_action = raw_action.clamp(-1.0, 1.0)
+
         return env_action, raw_action, logp, output.value, output.state
 
-    def deterministic_action(
-        self,
-        obs,
-        state=None,
-    ):
+    def deterministic_action(self, obs, state=None):
         output = self.forward_step(obs, state)
         mean, _ = output.logits.split(ACTION_DIM, dim=-1)
         mean = torch.nan_to_num(mean, nan=0.0, posinf=1.0, neginf=-1.0)
+
         return mean.clamp(-1.0, 1.0), output.state
 
 
@@ -354,6 +340,7 @@ def evaluate_logp_entropy(
         log_std_max=log_std_max,
         mean_clip=mean_clip,
     )
+
     return dist.log_prob(raw_action).sum(-1), dist.entropy().sum(-1)
 
 
@@ -366,6 +353,7 @@ def rllib_weight_dict(policy):
     result = {
         "pi.log_std_clip_param_const": const,
     }
+
     if policy.profile.use_lstm:
         result.update(
             {

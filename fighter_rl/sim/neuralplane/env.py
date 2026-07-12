@@ -1,5 +1,3 @@
-"""End-to-end GPU batched competition F-16 environment."""
-
 from pathlib import Path
 import torch
 
@@ -32,6 +30,7 @@ def euler_to_quaternion(euler):
     cr, sr = torch.cos(roll), torch.sin(roll)
     cp, sp = torch.cos(pitch), torch.sin(pitch)
     cy, sy = torch.cos(yaw), torch.sin(yaw)
+
     return torch.stack(
         (
             cr * cp * cy + sr * sp * sy,
@@ -48,6 +47,7 @@ def quaternion_to_euler(q):
     roll = torch.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
     pitch = torch.asin((2 * (w * y - z * x)).clamp(-1, 1))
     yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
     return torch.stack((roll, pitch, yaw), 1)
 
 
@@ -59,45 +59,56 @@ class CompetitionNeuralPlane(torch.nn.Module):
         self.num_envs = int(num_envs)
         self.hz = int(hz)
         self.dt = 1.0 / self.hz
+
         self.fcs = CompetitionF16FCSTorch(hz)
         self.engine = CompetitionF100(ROOT / "stock_runtime/engine/F100-PW-229.xml", hz)
         self.aero = CompetitionXMLAero(ROOT / "stock_runtime/aircraft/f16/f16.xml")
         self.dynamics = CompetitionDynamics()
+
         self.to(device=device, dtype=dtype)
         self.device = torch.device(device)
         self.dtype = dtype
         self.use_eci = bool(use_eci)
+
         self.state = torch.zeros(self.num_envs, 12, device=self.device, dtype=dtype)
         self.fcs_state = initial_fcs_state(self.num_envs, self.device, dtype=dtype)
         self.engine_state = self.engine.initial(self.num_envs, self.device)
+
         self.surfaces = torch.zeros(self.num_envs, 7, device=self.device, dtype=dtype)
         self.ny = torch.zeros(self.num_envs, device=self.device, dtype=dtype)
         self.nz = torch.ones(self.num_envs, device=self.device, dtype=dtype)
         self.angular_accel = torch.zeros(self.num_envs, 3, device=self.device, dtype=dtype)
         self.pilot_ny = torch.zeros(self.num_envs, device=self.device, dtype=dtype)
         self.pilot_nz = torch.zeros(self.num_envs, device=self.device, dtype=dtype)
+
         self.pending_aero = torch.zeros(self.num_envs, 6, device=self.device, dtype=dtype)
         self.pending_thrust = torch.zeros(self.num_envs, device=self.device, dtype=dtype)
         self.gear_pos = torch.ones(self.num_envs, device=self.device, dtype=dtype)
+
         self.body_accel_history = torch.zeros(self.num_envs, 2, 3, device=self.device, dtype=dtype)
         self.position_rate_history = torch.zeros(
             self.num_envs, 2, 3, device=self.device, dtype=dtype
         )
+
         self.quaternion = torch.zeros(self.num_envs, 4, device=self.device, dtype=dtype)
         self.fuel_lbs = torch.full(
             (self.num_envs,), 6971.963548061171, device=self.device, dtype=dtype
         )
         self.frame_index = 0
+
         self.aero_scale = torch.ones(self.num_envs, 6, device=self.device, dtype=dtype)
         self.thrust_scale = torch.ones(self.num_envs, device=self.device, dtype=dtype)
+
         # Absolute ECI coordinates are O(2e7 ft); float32 has ~2 ft ULP there.
         # Keep only the small propagation state in float64 while aero/FCS and
         # policy tensors retain the requested training dtype.
         self.eci_position = torch.zeros(self.num_envs, 3, device=self.device, dtype=torch.float64)
         self.eci_velocity = torch.zeros_like(self.eci_position)
         self.eci_quaternion = torch.zeros(self.num_envs, 4, device=self.device, dtype=dtype)
+
         self.pqri = torch.zeros(self.num_envs, 3, device=self.device, dtype=dtype)
         self.epa = torch.zeros(self.num_envs, device=self.device, dtype=torch.float64)
+
         self.eci_accel_history = torch.zeros(
             self.num_envs, 2, 3, device=self.device, dtype=torch.float64
         )
@@ -111,6 +122,7 @@ class CompetitionNeuralPlane(torch.nn.Module):
     ):
         def column(value):
             t = torch.as_tensor(value, dtype=self.dtype, device=self.device)
+
             return t.expand(self.num_envs) if t.ndim == 0 else t
 
         alt, speed, roll, pitch, heading = map(
@@ -132,10 +144,12 @@ class CompetitionNeuralPlane(torch.nn.Module):
         s[:, 42] = 37.91455691666667
         s[:, 43] = 128.18188127777776
         s[:, 44] = alt
+
         return self.reset_from_exact41(s)
 
     def reset_from_exact41(self, state41):
         s = torch.as_tensor(state41, dtype=self.dtype, device=self.device)
+
         if s.ndim == 1:
             s = s.expand(self.num_envs, -1)
         if self.use_eci:
@@ -244,6 +258,7 @@ class CompetitionNeuralPlane(torch.nn.Module):
         self.fcs_state = FCSState(*fs)
         self.position_rate_history[:] = derivative[:, :3, None].transpose(1, 2)
         self._reset_eci(s, prewarm_specific)
+
         return self.observation41()
 
     def reset_from_release51(self, state51):
@@ -257,12 +272,14 @@ class CompetitionNeuralPlane(torch.nn.Module):
         state contract.
         """
         s = torch.as_tensor(state51, dtype=self.dtype, device=self.device)
+
         if s.ndim == 1:
             s = s.expand(self.num_envs, -1)
         mapped = torch.zeros(
             (self.num_envs, max(51, s.shape[1])), dtype=self.dtype, device=self.device
         )
         mapped[:, :16] = s[:, :16]
+
         if self.use_eci and s.shape[1] > 44:
             mapped[:, 2] = -s[:, 44]
         mapped[:, 16] = s[:, 16]
@@ -274,8 +291,10 @@ class CompetitionNeuralPlane(torch.nn.Module):
         mapped[:, 22:34] = s[:, 22:34]
         mapped[:, 41:46] = s[:, 41:46]
         obs = self.reset_from_exact41(mapped)
+
         if self.use_eci:
             alt_m = (-s[:, 2]).clamp_min(0.0)
+
             if s.shape[1] > 44:
                 alt_m = torch.where(alt_m > 1.0, alt_m, s[:, 44].clamp_min(0.0))
             obs = self.set_local_position_m(s[:, 0], s[:, 1], alt_m)
@@ -289,6 +308,7 @@ class CompetitionNeuralPlane(torch.nn.Module):
             self.engine_state.n1, self.engine_state.n2, thrust, self.engine_state.fuel_flow_pph
         )
         self.pending_thrust = thrust * self.thrust_scale
+
         return obs
 
     def randomize_model(self, force_fraction=0.0, moment_fraction=0.0, thrust_fraction=0.0):
@@ -306,6 +326,7 @@ class CompetitionNeuralPlane(torch.nn.Module):
     def _reset_eci(self, s, prewarm_specific):
         lat0 = self.state.new_tensor(37.91455691666667 * torch.pi / 180)
         lon0 = self.state.new_tensor(128.18188127777776 * torch.pi / 180)
+
         if s.shape[1] > 44:
             lat = torch.where(
                 s[:, 42].abs() > 1, torch.deg2rad(s[:, 42]), lat0.expand(self.num_envs)
@@ -344,6 +365,7 @@ class CompetitionNeuralPlane(torch.nn.Module):
 
         def column(value):
             t = torch.as_tensor(value, dtype=self.dtype, device=self.device)
+
             return t.expand(self.num_envs) if t.ndim == 0 else t
 
         north_m, east_m, alt_m = map(column, (north_m, east_m, alt_m))
@@ -356,8 +378,10 @@ class CompetitionNeuralPlane(torch.nn.Module):
         self.state[:, 0] = north_ft.to(self.dtype)
         self.state[:, 1] = east_ft.to(self.dtype)
         self.state[:, 2] = alt_ft.to(self.dtype)
+
         if not self.use_eci:
             return self.observation41()
+
         origin_lat = torch.full(
             (self.num_envs,),
             37.91455691666667 * torch.pi / 180,
@@ -402,19 +426,20 @@ class CompetitionNeuralPlane(torch.nn.Module):
         )
         self.eci_accel_history[:] = accel[:, None, :]
         self.eci_velocity_history[:] = self.eci_velocity[:, None, :]
+
         return self.observation41()
 
     @staticmethod
     def _uvw(state):
         vt, alpha, beta = state[:, 6], state[:, 7], state[:, 8]
-        return torch.stack(
-            (
-                vt * torch.cos(beta) * torch.cos(alpha),
-                vt * torch.sin(beta),
-                vt * torch.cos(beta) * torch.sin(alpha),
-            ),
-            1,
-        )
+
+        # fmt: off
+        return torch.stack((
+            vt*torch.cos(beta)*torch.cos(alpha),
+            vt*torch.sin(beta),
+            vt*torch.cos(beta)*torch.sin(alpha),
+        ), 1)
+        # fmt: on
 
     def _eci_attitude(self, q, epa, position):
         r_i2e = earth_rotation(epa)
@@ -422,11 +447,13 @@ class CompetitionNeuralPlane(torch.nn.Module):
         lat, lon, _ = ecef_to_geocentric(ecef)
         r_b2e = r_i2e @ quaternion_to_matrix(q).double()
         r_b2n = ned_to_ecef_matrix(lat, lon).transpose(1, 2) @ r_b2e
+
         return matrix_to_euler(r_b2n).to(q.dtype)
 
     def observation41(self):
         x = self.state
         out = torch.zeros(self.num_envs, 41, device=self.device, dtype=self.dtype)
+
         if self.use_eci:
             out[:, 0:3] = self.release_position_m
         else:
@@ -460,11 +487,13 @@ class CompetitionNeuralPlane(torch.nn.Module):
         out[:, 31] = self.nz
         out[:, 32] = self.ny
         out[:, 33] = self.engine_state.n2
+
         return out
 
     def _derivative(self, state, surfaces, thrust):
         props = airborne_properties(state, surfaces)
         forces = self.aero(props)
+
         return self.dynamics(state, forces, thrust, self.fuel_lbs)
 
     @staticmethod
@@ -472,9 +501,13 @@ class CompetitionNeuralPlane(torch.nn.Module):
         vt, alpha, beta = state[:, 6], state[:, 7], state[:, 8]
         sa, ca, sb, cb = torch.sin(alpha), torch.cos(alpha), torch.sin(beta), torch.cos(beta)
         vd, ad, bd = derivative[:, 6], derivative[:, 7], derivative[:, 8]
-        ud = cb * ca * vd - vt * sb * ca * bd - vt * cb * sa * ad
-        vv = sb * vd + vt * cb * bd
-        wd = cb * sa * vd - vt * sb * sa * bd + vt * cb * ca * ad
+
+        # fmt: off
+        ud = cb*ca*vd - vt*sb*ca*bd - vt*cb*sa*ad
+        vv = sb*vd + vt*cb*bd
+        wd = cb*sa*vd - vt*sb*sa*bd + vt*cb*ca*ad
+        # fmt: on
+
         return torch.stack((ud, vv, wd), 1)
 
     @staticmethod
@@ -489,14 +522,14 @@ class CompetitionNeuralPlane(torch.nn.Module):
             torch.sin(psi),
             torch.cos(psi),
         )
-        return torch.stack(
-            (
-                u * ct * cs + v * (sp * st * cs - cp * ss) + w * (cp * st * cs + sp * ss),
-                u * ct * ss + v * (sp * st * ss + cp * cs) + w * (cp * st * ss - sp * cs),
-                -u * st + v * sp * ct + w * cp * ct,
-            ),
-            1,
-        )
+
+        # fmt: off
+        return torch.stack((
+            u*ct*cs + v*(sp*st*cs - cp*ss) + w*(cp*st*cs + sp*ss),
+            u*ct*ss + v*(sp*st*ss + cp*cs) + w*(cp*st*ss - sp*cs),
+            -u*st + v*sp*ct + w*cp*ct,
+        ), 1)
+        # fmt: on
 
     @staticmethod
     def _ned_to_body(vector, attitude):
@@ -510,27 +543,27 @@ class CompetitionNeuralPlane(torch.nn.Module):
             torch.sin(psi),
             torch.cos(psi),
         )
-        return torch.stack(
-            (
-                ct * cs * n + ct * ss * e - st * d,
-                (sp * st * cs - cp * ss) * n + (sp * st * ss + cp * cs) * e + sp * ct * d,
-                (cp * st * cs + sp * ss) * n + (cp * st * ss - sp * cs) * e + cp * ct * d,
-            ),
-            1,
-        )
+
+        # fmt: off
+        return torch.stack((
+            ct*cs*n + ct*ss*e - st*d,
+            (sp*st*cs - cp*ss)*n + (sp*st*ss + cp*cs)*e + sp*ct*d,
+            (cp*st*cs + sp*ss)*n + (cp*st*ss - sp*cs)*e + cp*ct*d,
+        ), 1)
+        # fmt: on
 
     def _nonrotating_acceleration(self, state, derivative):
         uvwdot = self._body_acceleration(state, derivative)
         vt, alpha, beta = state[:, 6], state[:, 7], state[:, 8]
-        uvw = torch.stack(
-            (
-                vt * torch.cos(beta) * torch.cos(alpha),
-                vt * torch.sin(beta),
-                vt * torch.cos(beta) * torch.sin(alpha),
-            ),
-            1,
-        )
+        # fmt: off
+        uvw = torch.stack((
+            vt*torch.cos(beta)*torch.cos(alpha),
+            vt*torch.sin(beta),
+            vt*torch.cos(beta)*torch.sin(alpha),
+        ), 1)
+        # fmt: on
         transport = torch.linalg.cross(state[:, 9:12], uvw)
+
         return self._body_to_ned(uvwdot + transport, state[:, 3:6])
 
     def step(self, action):
@@ -540,14 +573,18 @@ class CompetitionNeuralPlane(torch.nn.Module):
         x = self.state
         aero = self.pending_aero
         thrust = self.pending_thrust
+
         k1 = self.dynamics(x, aero, thrust, self.fuel_lbs)
         body_accel = self._body_acceleration(x, k1)
         nonrotating_accel = self._nonrotating_acceleration(x, k1)
         pre_obs = self.observation41()
+
         attitude_quaternion = self.eci_quaternion if self.use_eci else self.quaternion
         attitude_rates = self.pqri if self.use_eci else x[:, 9:12]
+
         qw, qx, qy, qz = attitude_quaternion.unbind(1)
         p_rate, q_rate, r_rate = attitude_rates.unbind(1)
+
         qdot = 0.5 * torch.stack(
             (
                 -qx * p_rate - qy * q_rate - qz * r_rate,
@@ -557,15 +594,18 @@ class CompetitionNeuralPlane(torch.nn.Module):
             ),
             1,
         )
+
         propagated_quaternion = attitude_quaternion + self.dt * qdot
         propagated_quaternion = propagated_quaternion / torch.linalg.vector_norm(
             propagated_quaternion, dim=1, keepdim=True
         ).clamp_min(1e-9)
+
         propagated_attitude = (
             self._eci_attitude(propagated_quaternion, self.epa + self.dt * OMEGA, self.eci_position)
             if self.use_eci
             else quaternion_to_euler(propagated_quaternion)
         )
+
         delayed_pilot = torch.stack((self.pilot_ny, self.pilot_nz), 1)
         self.fcs_state, self.surfaces = self.fcs(
             self.fcs_state,
@@ -574,20 +614,24 @@ class CompetitionNeuralPlane(torch.nn.Module):
             pilot_loads=delayed_pilot,
             gravity_attitude=propagated_attitude,
         )
+
         self.engine_state = self.engine(self.engine_state, action[:, 3], pre_obs[:, 29], x[:, 2])
         self.fuel_lbs = (
             self.fuel_lbs - self.engine_state.fuel_flow_pph * self.dt / 3600.0
         ).clamp_min(0.0)
+
         if self.use_eci:
             # Exact FGPropagate sequence: ECI attitude/rate RectEuler, ECI
             # velocity AB2 and position AB3, then reconstruct ECEF/local state.
             r_b2i = quaternion_to_matrix(self.eci_quaternion)
             r_i2e = earth_rotation(self.epa)
             ecef = (r_i2e @ self.eci_position.unsqueeze(2)).squeeze(2)
+
             specific = self.dynamics.specific_force(x, aero, thrust, self.fuel_lbs)
             accel_i = (r_b2i.double() @ specific.double().unsqueeze(2)).squeeze(2) + (
                 r_i2e.transpose(1, 2) @ gravity_j2(ecef).unsqueeze(2)
             ).squeeze(2)
+
             new_eci_position = (
                 self.eci_position
                 + self.dt
@@ -601,19 +645,24 @@ class CompetitionNeuralPlane(torch.nn.Module):
             new_eci_velocity = self.eci_velocity + self.dt * (
                 1.5 * accel_i - 0.5 * self.eci_accel_history[:, 0]
             )
+
             omega_i = x.new_tensor([0.0, 0.0, OMEGA]).expand_as(self.pqri)
             omega_b = (r_b2i.transpose(1, 2) @ omega_i.unsqueeze(2)).squeeze(2)
             pqri_dot = k1[:, 9:12] - torch.linalg.cross(self.pqri, omega_b)
+
             new_pqri = self.pqri + self.dt * pqri_dot
             new_epa = self.epa + self.dt * OMEGA
+
             r_i2e_new = earth_rotation(new_epa)
             new_ecef = (r_i2e_new @ new_eci_position.unsqueeze(2)).squeeze(2)
             lat, lon, alt = ecef_to_geocentric(new_ecef)
+
             r_b2i_new = quaternion_to_matrix(propagated_quaternion)
             r_b2e = r_i2e_new @ r_b2i_new.double()
             new_attitude = matrix_to_euler(ned_to_ecef_matrix(lat, lon).transpose(1, 2) @ r_b2e).to(
                 x.dtype
             )
+
             relative_i = new_eci_velocity - torch.linalg.cross(omega_i.double(), new_eci_position)
             uvw = (
                 (r_b2i_new.double().transpose(1, 2) @ relative_i.unsqueeze(2))
@@ -624,6 +673,7 @@ class CompetitionNeuralPlane(torch.nn.Module):
             new_alpha = torch.atan2(uvw[:, 2], uvw[:, 0])
             new_beta = torch.asin((uvw[:, 1] / new_vt).clamp(-0.999, 0.999))
             new_rates = new_pqri - (r_b2i_new.transpose(1, 2) @ omega_i.unsqueeze(2)).squeeze(2)
+
             origin_lat = torch.full(
                 (self.num_envs,),
                 37.91455691666667 * torch.pi / 180,
@@ -636,6 +686,7 @@ class CompetitionNeuralPlane(torch.nn.Module):
                 device=x.device,
                 dtype=torch.float64,
             )
+
             lat_obs, lon_obs, alt_obs = ecef_to_geocentric(new_ecef)
             obs_ecef = geodetic_to_ecef(lat_obs, lon_obs, alt_obs)
             origin = geodetic_to_ecef(origin_lat, origin_lon, torch.zeros_like(origin_lat))
@@ -643,12 +694,15 @@ class CompetitionNeuralPlane(torch.nn.Module):
                 ned_to_ecef_matrix(origin_lat, origin_lon).transpose(1, 2)
                 @ (obs_ecef - origin).unsqueeze(2)
             ).squeeze(2)
+
             self.release_position_m = (ned * FT_TO_M).to(x.dtype)
             new_position = torch.stack((ned[:, 0], ned[:, 1], alt), 1).to(x.dtype)
+
             self.eci_velocity_history = torch.stack(
                 (self.eci_velocity, self.eci_velocity_history[:, 0]), 1
             )
             self.eci_accel_history = torch.stack((accel_i, self.eci_accel_history[:, 0]), 1)
+
             self.eci_position, self.eci_velocity, self.eci_quaternion, self.pqri, self.epa = (
                 new_eci_position,
                 new_eci_velocity,
@@ -667,15 +721,19 @@ class CompetitionNeuralPlane(torch.nn.Module):
             new_position = x[:, :3] + self.dt * pos_rate
             old_uvw = self._uvw(x)
             old_ned_velocity = self._body_to_ned(old_uvw, x[:, 3:6])
+
             ab2 = 1.5 * nonrotating_accel - 0.5 * self.body_accel_history[:, 0]
             new_ned_velocity = old_ned_velocity + self.dt * ab2
             uvw = self._ned_to_body(new_ned_velocity, propagated_attitude)
+
             new_vt = torch.linalg.vector_norm(uvw, dim=1).clamp_min(1.0)
             new_alpha = torch.atan2(uvw[:, 2], uvw[:, 0])
             new_beta = torch.asin((uvw[:, 1] / new_vt).clamp(-0.999, 0.999))
+
             self.quaternion = propagated_quaternion
             new_attitude = quaternion_to_euler(self.quaternion)
             new_rates = x[:, 9:12] + self.dt * k1[:, 9:12]
+
         self.state = torch.cat(
             (
                 new_position,
@@ -687,9 +745,11 @@ class CompetitionNeuralPlane(torch.nn.Module):
             ),
             1,
         )
+
         self.position_rate_history = torch.stack((k1[:, :3], self.position_rate_history[:, 0]), 1)
         self.body_accel_history = torch.stack((nonrotating_accel, self.body_accel_history[:, 0]), 1)
         self.state[:, 3:6] = torch.remainder(self.state[:, 3:6] + torch.pi, 2 * torch.pi) - torch.pi
+
         # Pilot load approximation used only as next-frame FCS feedback.
         # Convert (V,alpha,beta) derivatives back to body acceleration before
         # calculating accelerometer load factors at the CG.
@@ -713,6 +773,7 @@ class CompetitionNeuralPlane(torch.nn.Module):
         )
         self.pending_thrust = self.engine_state.thrust_lbf * self.thrust_scale
         self.frame_index += 1
+
         return self.observation41()
 
 

@@ -1,5 +1,3 @@
-"""GPU-batched v3 loiter curriculum environment using CompetitionNeuralPlane."""
-
 import torch
 from fighter_rl.envs.batch import CompetitionBatchDogfight
 from fighter_rl.envs.bt_policy import bt_action, bt_empty_action, make_bt_state
@@ -51,9 +49,12 @@ class CompetitionLoiterCurriculumEnv:
     def _uniform(self, values, default=0.0):
         if values is None:
             return torch.full((self.n,), float(default), device=self.device)
+
         if isinstance(values, (int, float)):
             return torch.full((self.n,), float(values), device=self.device)
+
         lo, hi = map(float, values)
+
         return torch.empty(self.n, device=self.device).uniform_(min(lo, hi), max(lo, hi))
 
     def _is_gun_curriculum(self):
@@ -70,22 +71,33 @@ class CompetitionLoiterCurriculumEnv:
         cases.  This keeps 60% uniform, 20% easy-center, 20% hard-boundary by
         default, using per-stage fractions from target_randomization.
         """
+
         if values is None:
             return torch.full((self.n,), float(default), device=self.device)
+
         if isinstance(values, (int, float)):
             return torch.full((self.n,), abs(float(values)), device=self.device)
+
         lo, hi = sorted(map(float, values))
+
         if hi <= lo:
             return torch.full((self.n,), lo, device=self.device)
+
         cfg = self.stage.target_randomization
+
         easy = float(cfg.get("easy_fraction", 0.20))
         boundary = float(cfg.get("boundary_fraction", 0.20))
+
         u = torch.rand(self.n, device=self.device)
+
         uniform = torch.empty(self.n, device=self.device).uniform_(lo, hi)
+
         easy_hi = lo + (hi - lo) * 0.35
         easy_sample = torch.empty(self.n, device=self.device).uniform_(lo, easy_hi)
+
         hard_lo = hi - (hi - lo) * 0.25
         hard_sample = torch.empty(self.n, device=self.device).uniform_(hard_lo, hi)
+
         return torch.where(
             u < easy, easy_sample, torch.where(u < easy + boundary, hard_sample, uniform)
         )
@@ -93,24 +105,35 @@ class CompetitionLoiterCurriculumEnv:
     def _sample_progressive_abs_cfg(self, cfg, values, default=0.0, axis=None):
         if values is None:
             return torch.full((self.n,), float(default), device=self.device)
+
         if isinstance(values, (int, float)):
             return torch.full((self.n,), abs(float(values)), device=self.device)
+
         lo, hi = sorted(map(float, values))
+
         if hi <= lo:
             return torch.full((self.n,), lo, device=self.device)
+
         sampling = cfg.get("sampling", {}) if isinstance(cfg, dict) else {}
         axis_cfg = sampling.get(axis or "", {}) if isinstance(sampling, dict) else {}
+
         easy = float(axis_cfg.get("easy", cfg.get("easy_fraction", 0.20)))
         boundary = float(axis_cfg.get("boundary", cfg.get("boundary_fraction", 0.20)))
+
         easy = max(0.0, min(1.0, easy))
         boundary = max(0.0, min(1.0 - easy, boundary))
+
         u = torch.rand(self.n, device=self.device)
+
         uniform = torch.empty(self.n, device=self.device).uniform_(lo, hi)
+
         easy_hi = lo + (hi - lo) * float(axis_cfg.get("easy_span", 0.35))
         easy_sample = torch.empty(self.n, device=self.device).uniform_(lo, easy_hi)
+
         hard_span = float(axis_cfg.get("boundary_span", 0.25))
         hard_lo = hi - (hi - lo) * hard_span
         hard_sample = torch.empty(self.n, device=self.device).uniform_(hard_lo, hi)
+
         return torch.where(
             u < easy, easy_sample, torch.where(u < easy + boundary, hard_sample, uniform)
         )
@@ -119,11 +142,15 @@ class CompetitionLoiterCurriculumEnv:
     def _policy_mix_from_cfg(cfg):
         if not cfg:
             return None
+
         if "target_policy_mix" in cfg:
             return cfg.get("target_policy_mix")
+
         name = cfg.get("target_policy", cfg.get("policy", None))
+
         if name is None:
             return None
+
         return [{"policy": str(name), "weight": 1.0}]
 
     @staticmethod
@@ -131,14 +158,18 @@ class CompetitionLoiterCurriculumEnv:
         text = str(name or "bucket").strip().lower()
         out = "".join(ch if ch.isalnum() else "_" for ch in text)
         out = "_".join(part for part in out.split("_") if part)
+
         return out or "bucket"
 
     def _bucket_mix(self, target_cfg):
         raw = target_cfg.get("bucket_mix") or []
         buckets = [dict(item) for item in raw if float(item.get("weight", 1.0)) > 0]
+
         if not buckets:
             return []
+
         total = sum(float(item.get("weight", 1.0)) for item in buckets)
+
         for i, item in enumerate(buckets):
             item.setdefault("name", f"bucket_{i}")
             item["weight"] = float(item.get("weight", 1.0)) / max(total, 1e-9)
@@ -147,7 +178,9 @@ class CompetitionLoiterCurriculumEnv:
     def _sample_bucket_ids(self, buckets):
         if not buckets:
             self.bucket_names = ["default"]
+
             return torch.zeros(self.n, dtype=torch.long, device=self.device)
+
         probs = torch.as_tensor(
             [float(item.get("weight", 1.0)) for item in buckets],
             dtype=torch.float32,
@@ -158,24 +191,31 @@ class CompetitionLoiterCurriculumEnv:
             self._safe_bucket_name(item.get("name", f"bucket_{i}"))
             for i, item in enumerate(buckets)
         ]
+
         return torch.multinomial(probs, self.n, replacement=True)
 
     def _bucket_uniform(self, target_cfg, buckets, bucket_ids, key, default=0.0):
         out = self._uniform(target_cfg.get(key), default)
+
         for i, bucket in enumerate(buckets):
             if key not in bucket:
                 continue
+
             mask = bucket_ids == i
+
             if bool(mask.any()):
                 out = torch.where(mask, self._uniform(bucket.get(key), default), out)
         return out
 
     def _bucket_abs(self, target_cfg, buckets, bucket_ids, key, default=0.0, axis=None):
         out = self._sample_progressive_abs_cfg(target_cfg, target_cfg.get(key), default, axis=axis)
+
         for i, bucket in enumerate(buckets):
             if key not in bucket:
                 continue
+
             mask = bucket_ids == i
+
             if bool(mask.any()):
                 out = torch.where(
                     mask,
@@ -188,20 +228,26 @@ class CompetitionLoiterCurriculumEnv:
         out = torch.full(
             (self.n,), bool(target_cfg.get(key, default)), dtype=torch.bool, device=self.device
         )
+
         for i, bucket in enumerate(buckets):
             if key not in bucket:
                 continue
+
             mask = bucket_ids == i
+
             if bool(mask.any()):
                 out = torch.where(mask, torch.full_like(out, bool(bucket.get(key))), out)
         return out
 
     def _bucket_sign(self, buckets, bucket_ids, key):
         out = torch.where(torch.rand(self.n, device=self.device) < 0.5, -1.0, 1.0)
+
         for i, bucket in enumerate(buckets):
             if key not in bucket:
                 continue
+
             mask = bucket_ids == i
+
             if bool(mask.any()):
                 out = torch.where(mask, torch.full_like(out, float(bucket.get(key))), out)
         return out
@@ -210,11 +256,15 @@ class CompetitionLoiterCurriculumEnv:
         ids = self._sample_policy_ids(
             self._policy_mix_from_cfg(target_cfg) or target_cfg.get("target_policy_mix")
         )
+
         for i, bucket in enumerate(buckets):
             mix = self._policy_mix_from_cfg(bucket)
+
             if not mix:
                 continue
+
             mask = bucket_ids == i
+
             if bool(mask.any()):
                 ids = torch.where(mask, self._sample_policy_ids(mix), ids)
         return ids
@@ -222,12 +272,15 @@ class CompetitionLoiterCurriculumEnv:
     def _apply_bucket_dv(self, target_cfg, buckets, bucket_ids, target_speed, own_speed):
         out = own_speed
         base_dv = target_cfg.get("dv_mps")
+
         if base_dv is not None:
             out = target_speed + self._uniform(base_dv, 0.0)
         for i, bucket in enumerate(buckets):
             if "dv_mps" not in bucket:
                 continue
+
             mask = bucket_ids == i
+
             if bool(mask.any()):
                 out = torch.where(
                     mask, target_speed + self._uniform(bucket.get("dv_mps"), 0.0), out
@@ -238,7 +291,9 @@ class CompetitionLoiterCurriculumEnv:
     def _sync_release_position(plane, north_m, east_m, alt_m):
         if hasattr(plane, "set_local_position_m"):
             plane.set_local_position_m(north_m, east_m, alt_m)
+
             return
+
         if getattr(plane, "use_eci", False) and hasattr(plane, "release_position_m"):
             plane.release_position_m[:, 0] = north_m
             plane.release_position_m[:, 1] = east_m
@@ -254,23 +309,30 @@ class CompetitionLoiterCurriculumEnv:
             "shooter": 5,
             "bt": 6,
         }
+
         if not mix:
             return torch.zeros(self.n, dtype=torch.long, device=self.device)
+
         weights = []
         ids = []
+
         for item in mix:
             name = str(item.get("policy", "straight"))
             weight = float(item.get("weight", 1.0))
+
             if weight <= 0:
                 continue
+
             ids.append(mapping.get(name, 0))
             weights.append(weight)
         if not weights:
             return torch.zeros(self.n, dtype=torch.long, device=self.device)
+
         probs = torch.as_tensor(weights, dtype=torch.float32, device=self.device)
         probs = probs / probs.sum()
         choice = torch.multinomial(probs, self.n, replacement=True)
         ids_t = torch.as_tensor(ids, dtype=torch.long, device=self.device)
+
         return ids_t[choice]
 
     def _initial_feasibility(self, distance, ata_abs, aa_abs, own_speed, target_speed):
@@ -301,78 +363,83 @@ class CompetitionLoiterCurriculumEnv:
         )
         feasible = (~outside) | ((closing >= min_closing) & (time_to <= time_budget))
         opening = closing <= 0.0
+
         return closing, time_to, feasible, opening
 
     def reset(self):
         own_cfg = self.stage.ownship_randomization
         target_cfg = self.stage.target_randomization
+
         if self._is_gun_curriculum():
             buckets = self._bucket_mix(target_cfg)
             bucket_ids = self._sample_bucket_ids(buckets)
+
             self.init_bucket_id = bucket_ids
-            self.init_bucket_require_feasible = self._bucket_bool(
-                target_cfg, buckets, bucket_ids, "ensure_initial_feasible", True
-            )
-            own_alt = self._bucket_uniform(target_cfg, buckets, bucket_ids, "altitude_m", 7000.0)
-            own_speed = self._bucket_uniform(
-                target_cfg, buckets, bucket_ids, "own_speed_mps", 285.0
-            )
-            own_roll = self._uniform(
-                [-float(own_cfg.get("r_roll", 0)), float(own_cfg.get("r_roll", 0))]
-            )
-            own_pitch = self._uniform(
-                [-float(own_cfg.get("r_pitch", 0)), float(own_cfg.get("r_pitch", 0))]
-            )
-            own_heading = self._bucket_uniform(
-                target_cfg, buckets, bucket_ids, "own_heading_deg", 0.0
-            )
-            distance = self._bucket_abs(
-                target_cfg, buckets, bucket_ids, "distance_m", 700.0, axis="distance"
-            )
-            ata_abs = self._bucket_abs(target_cfg, buckets, bucket_ids, "ata_deg", 0.0, axis="ata")
-            aa_abs = self._bucket_abs(
-                target_cfg, buckets, bucket_ids, "aa_tail_deg", 0.0, axis="aa_tail"
-            )
-            target_speed = self._bucket_uniform(target_cfg, buckets, bucket_ids, "speed_mps", 270.0)
-            own_speed = self._apply_bucket_dv(
-                target_cfg, buckets, bucket_ids, target_speed, own_speed
-            )
+
+            def bucket_uniform(name, default):
+                return self._bucket_uniform(target_cfg, buckets, bucket_ids, name, default)
+
+            def bucket_abs(name, default, axis=None):
+                return self._bucket_abs(target_cfg, buckets, bucket_ids, name, default, axis=axis)
+
+            def bucket_bool(name, default):
+                return self._bucket_bool(target_cfg, buckets, bucket_ids, name, default)
+
+            def apply_bucket_dv(target_speed, own_speed):
+                return self._apply_bucket_dv(
+                    target_cfg, buckets, bucket_ids, target_speed, own_speed
+                )
+
+            self.init_bucket_require_feasible = bucket_bool("ensure_initial_feasible", True)
+
+            own_alt = bucket_uniform("altitude_m", 7000.0)
+            own_speed = bucket_uniform("own_speed_mps", 285.0)
+            own_heading = bucket_uniform("own_heading_deg", 0.0)
+
+            roll_limit = float(own_cfg.get("r_roll", 0))
+            pitch_limit = float(own_cfg.get("r_pitch", 0))
+
+            own_roll = self._uniform([-roll_limit, roll_limit])
+            own_pitch = self._uniform([-pitch_limit, pitch_limit])
+
+            distance = bucket_abs("distance_m", 700.0, axis="distance")
+            ata_abs = bucket_abs("ata_deg", 0.0, axis="ata")
+            aa_abs = bucket_abs("aa_tail_deg", 0.0, axis="aa_tail")
+
+            target_speed = bucket_uniform("speed_mps", 270.0)
+            own_speed = apply_bucket_dv(target_speed, own_speed)
+
             if bool(self.init_bucket_require_feasible.any()):
                 attempts = max(0, int(target_cfg.get("feasible_resample_attempts", 10)))
+
                 for _ in range(attempts):
                     closing, time_to, feasible, opening = self._initial_feasibility(
                         distance, ata_abs, aa_abs, own_speed, target_speed
                     )
                     bad = (~feasible) & self.init_bucket_require_feasible
+
                     if not bool(bad.any()):
                         break
-                    new_distance = self._bucket_abs(
-                        target_cfg, buckets, bucket_ids, "distance_m", 700.0, axis="distance"
-                    )
-                    new_ata = self._bucket_abs(
-                        target_cfg, buckets, bucket_ids, "ata_deg", 0.0, axis="ata"
-                    )
-                    new_aa = self._bucket_abs(
-                        target_cfg, buckets, bucket_ids, "aa_tail_deg", 0.0, axis="aa_tail"
-                    )
-                    new_target_speed = self._bucket_uniform(
-                        target_cfg, buckets, bucket_ids, "speed_mps", 270.0
-                    )
-                    new_own_speed = self._bucket_uniform(
-                        target_cfg, buckets, bucket_ids, "own_speed_mps", 285.0
-                    )
-                    new_own_speed = self._apply_bucket_dv(
-                        target_cfg, buckets, bucket_ids, new_target_speed, new_own_speed
-                    )
+
+                    new_distance = bucket_abs("distance_m", 700.0, axis="distance")
+                    new_ata = bucket_abs("ata_deg", 0.0, axis="ata")
+                    new_aa = bucket_abs("aa_tail_deg", 0.0, axis="aa_tail")
+
+                    new_target_speed = bucket_uniform("speed_mps", 270.0)
+                    new_own_speed = bucket_uniform("own_speed_mps", 285.0)
+                    new_own_speed = apply_bucket_dv(new_target_speed, new_own_speed)
+
                     distance = torch.where(bad, new_distance, distance)
                     ata_abs = torch.where(bad, new_ata, ata_abs)
                     aa_abs = torch.where(bad, new_aa, aa_abs)
                     target_speed = torch.where(bad, new_target_speed, target_speed)
                     own_speed = torch.where(bad, new_own_speed, own_speed)
+
                 closing, time_to, feasible, opening = self._initial_feasibility(
                     distance, ata_abs, aa_abs, own_speed, target_speed
                 )
                 bad = (~feasible) & self.init_bucket_require_feasible
+
                 if bool(bad.any()):
                     wez_max = float(self.stage.wez.get("max_range_m", 914.4) or 914.4)
                     time_budget = float(self.stage.max_engage_time) * float(
@@ -396,21 +463,26 @@ class CompetitionLoiterCurriculumEnv:
             closing, time_to, feasible, opening = self._initial_feasibility(
                 distance, ata_abs, aa_abs, own_speed, target_speed
             )
+
             ata_sign = self._bucket_sign(buckets, bucket_ids, "ata_sign")
             aa_sign = self._bucket_sign(buckets, bucket_ids, "aa_sign")
+
             los_bearing = own_heading + ata_sign * ata_abs
             target_heading = torch.remainder(los_bearing - aa_sign * aa_abs, 360.0)
-            target_alt = (
-                own_alt
-                + self._bucket_uniform(target_cfg, buckets, bucket_ids, "altitude_offset_m", 0.0)
-            ).clamp(1200.0, 12000.0)
-            target_roll = self._bucket_uniform(target_cfg, buckets, bucket_ids, "roll_deg", 0.0)
-            target_pitch = self._bucket_uniform(target_cfg, buckets, bucket_ids, "pitch_deg", 0.0)
+
+            altitude_offset = bucket_uniform("altitude_offset_m", 0.0)
+
+            target_alt = (own_alt + altitude_offset).clamp(1200.0, 12000.0)
+            target_roll = bucket_uniform("roll_deg", 0.0)
+            target_pitch = bucket_uniform("pitch_deg", 0.0)
+
             self.own.reset(own_alt, own_speed, own_roll, own_pitch, own_heading)
             self.target.reset(target_alt, target_speed, target_roll, target_pitch, target_heading)
+
             own_n = torch.zeros(self.n, device=self.device)
             own_e = torch.zeros(self.n, device=self.device)
             bearing_rad = torch.deg2rad(los_bearing)
+
             self.own.state[:, 0] = own_n / 0.3048
             self.own.state[:, 1] = own_e / 0.3048
             self.target.state[:, 0] = (own_n + distance * torch.cos(bearing_rad)) / 0.3048
@@ -422,9 +494,7 @@ class CompetitionLoiterCurriculumEnv:
                 own_e + distance * torch.sin(bearing_rad),
                 target_alt,
             )
-            bank_abs = self._bucket_uniform(
-                target_cfg, buckets, bucket_ids, "loiter_bank_abs_deg", 0.0
-            )
+            bank_abs = bucket_uniform("loiter_bank_abs_deg", 0.0)
             direction = (
                 torch.where(torch.rand(self.n, device=self.device) < 0.5, -1.0, 1.0)
                 if target_cfg.get("randomize_loiter_direction", True)
@@ -432,10 +502,13 @@ class CompetitionLoiterCurriculumEnv:
                     (self.n,), float(target_cfg.get("loiter_direction", 1)), device=self.device
                 )
             )
+
             for i, bucket in enumerate(buckets):
                 if "loiter_direction" not in bucket:
                     continue
+
                 mask = bucket_ids == i
+
                 if bool(mask.any()):
                     direction = torch.where(
                         mask,
@@ -519,6 +592,7 @@ class CompetitionLoiterCurriculumEnv:
         self.target_wave_period = torch.empty(self.n, device=self.device).uniform_(8.0, 24.0)
         self.target_wave_phase = torch.empty(self.n, device=self.device).uniform_(0.0, 2 * torch.pi)
         self.target_speed_wave = torch.empty(self.n, device=self.device).uniform_(-12.0, 12.0)
+
         if self.domain_randomization:
             self.own.randomize_model(0.01, 0.015, 0.005)
             self.target.randomize_model(0.01, 0.015, 0.005)
@@ -561,6 +635,7 @@ class CompetitionLoiterCurriculumEnv:
         frame = self._make_frame(base, torch.zeros(self.n, 4, device=self.device))
         self.history = frame[:, None, :].expand(-1, self.frames, -1).clone()
         self.cached_observation = self.history.reshape(self.n, -1)
+
         return self.cached_observation
 
     def _geometry(self, o, t):
@@ -568,6 +643,7 @@ class CompetitionLoiterCurriculumEnv:
 
     def _target_frame_x(self, o, t):
         x, _, _ = self._target_frame_rel(o, t)
+
         return x
 
     def _target_frame_rel(self, o, t):
@@ -575,6 +651,7 @@ class CompetitionLoiterCurriculumEnv:
         psi = torch.deg2rad(t[:, 5])
         forward = torch.stack((torch.cos(psi), torch.sin(psi), torch.zeros_like(psi)), 1)
         right = torch.stack((-torch.sin(psi), torch.cos(psi), torch.zeros_like(psi)), 1)
+
         return (rel * forward).sum(1), (rel * right).sum(1), rel[:, 2]
 
     def _gun_phi(self, distance, ata, aa):
@@ -585,6 +662,7 @@ class CompetitionLoiterCurriculumEnv:
         aim = torch.exp(-torch.square(ata.abs() / theta))
         range_score = torch.exp(-torch.square((distance - center) / sigma))
         aft = 0.5 + 0.5 * (1 - aa.abs() / 180.0).clamp(0, 1)
+
         return torch.nan_to_num(aim * range_score * aft, nan=0.0, posinf=0.0, neginf=0.0).clamp(
             0, 1
         )
@@ -617,10 +695,12 @@ class CompetitionLoiterCurriculumEnv:
         )
         x[:, 14] = torch.where(inside, 1.0, -1.0)
         x[:, 15] = 2 * (1 - ata.abs() / 30).clamp(0, 1) * (1 - r / 3000).clamp(0, 1) - 1
+
         return torch.nan_to_num(x.clamp(-1, 1), nan=0.0, posinf=1.0, neginf=-1.0)
 
     def _make_frame(self, base, action):
         safe_action = torch.nan_to_num(action, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1, 1)
+
         return torch.cat((base, safe_action), 1) if self.include_previous_action else base
 
     def _target_action(self):
@@ -631,10 +711,14 @@ class CompetitionLoiterCurriculumEnv:
                 bt_state=getattr(self, "target_bt_state", None),
                 dt=1.0 / self.hz,
             )
+
             return torch.nan_to_num(action, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1, 1)
+
         if self.target_maneuver == "bt_empty":
             action, _ = bt_empty_action(self.target.observation41(), self.own.observation41())
+
             return torch.nan_to_num(action, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1, 1)
+
         if self._is_gun_curriculum() and self.target_maneuver in (
             "random_loiter",
             "gun_curriculum",
@@ -688,6 +772,7 @@ class CompetitionLoiterCurriculumEnv:
             a[:, 1] = (-altitude_error + obs[:, 4] / 45).clamp(-0.45, 0.45)
             a[:, 3] = (0.65 + (speed_cmd - obs[:, 27]) / 150).clamp(0.25, 1.0)
             bt_mask = pid == 6
+
             if bool(bt_mask.any()):
                 bt, _ = bt_action(
                     self.target.observation41(),
@@ -698,8 +783,10 @@ class CompetitionLoiterCurriculumEnv:
                 )
                 a = torch.where(bt_mask[:, None], bt, a)
             return torch.nan_to_num(a, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1, 1)
+
         obs = self.target.observation41()
         bank_error = torch.remainder(self.loiter_bank - obs[:, 3] + 180, 360) - 180
+
         if self.target_maneuver != "fixed_loiter":
             time = self.target.frame_index / self.hz
             bank_cmd = (
@@ -723,6 +810,7 @@ class CompetitionLoiterCurriculumEnv:
         altitude_error = (self.target_altitude - (-obs[:, 2])) / 1500
         a[:, 1] = (-altitude_error + obs[:, 4] / 45).clamp(-0.40, 0.40)
         a[:, 3] = (0.65 + (speed_cmd - obs[:, 27]) / 150).clamp(0.25, 1.0)
+
         return torch.nan_to_num(a, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1, 1)
 
     @staticmethod
@@ -738,6 +826,7 @@ class CompetitionLoiterCurriculumEnv:
         low, high = sorted(map(float, limits))
         below = (distance / max(1.0, low)).clamp(0, 1)
         above = (1 - (distance - high) / max(1.0, high)).clamp(0, 1)
+
         return torch.where(
             distance < low, below, torch.where(distance <= high, torch.ones_like(distance), above)
         )
@@ -758,6 +847,7 @@ class CompetitionLoiterCurriculumEnv:
         target_range = self.stage.target_randomization.get(
             "distance_m", self.stage.target_randomization.get("range_m", 5000.0)
         )
+
         try:
             if isinstance(target_range, (list, tuple)) and len(target_range) >= 2:
                 base = max(map(float, target_range[:2]))
@@ -767,6 +857,7 @@ class CompetitionLoiterCurriculumEnv:
             base = 5000.0
         wez_max = float(self.stage.wez.get("max_range_m", 0.0) or 0.0)
         approach = float(self.stage.reward.get("approach_range_m", 10000.0) or 10000.0)
+
         return float(max(20000.0, base * 4.0, wez_max * 4.0, approach * 2.0))
 
     @torch.no_grad()
@@ -780,20 +871,24 @@ class CompetitionLoiterCurriculumEnv:
         ).clamp(-1, 1)
         sim = a.clone()
         sim[:, 3] = (sim[:, 3] + 1) / 2
+
         total_own_damage = torch.zeros(self.n, device=self.device)
         total_target_damage = torch.zeros_like(total_own_damage)
+
         for _ in range(self.stage.step_ratio):
             self.own.step(sim)
             self.target.step(self._target_action())
             o, t = self.own.observation41(), self.target.observation41()
             _, distance, ata, _, _, _ = self._geometry(o, t)
             _, _, target_ata, _, _, _ = self._geometry(t, o)
+
             wez = self.stage.wez
             minimum, maximum, half = (
                 float(wez["min_range_m"]),
                 float(wez["max_range_m"]),
                 float(wez["angle_deg"]) / 2,
             )
+
             if maximum > minimum:
                 scale = ((maximum - distance) / (maximum - minimum)).clamp(0, 1) / self.hz
                 in_range = (distance >= minimum) & (distance <= maximum)
@@ -803,13 +898,17 @@ class CompetitionLoiterCurriculumEnv:
                 total_own_damage += torch.where(
                     valid & in_range & (target_ata.abs() <= half), scale, torch.zeros_like(scale)
                 )
+
         self.target_health = (self.target_health - total_target_damage).clamp_min(0)
         self.own_health = (self.own_health - total_own_damage).clamp_min(0)
         self.steps += valid.long()
+
         o, t = self.own.observation41(), self.target.observation41()
         _, distance, ata, aa, _, _ = self._geometry(o, t)
         _, _, target_ata, _, _, _ = self._geometry(t, o)
+
         cfg = self.stage.reward
+
         finite_state = (
             torch.isfinite(o).all(1)
             & torch.isfinite(t).all(1)
@@ -819,16 +918,21 @@ class CompetitionLoiterCurriculumEnv:
         )
         bad_distance = float(self._bad_distance_m())
         distance_ok = valid & finite_state & (distance >= 0)
+
         distance_s = torch.where(
             distance_ok, distance.clamp(0.0, bad_distance), torch.full_like(distance, bad_distance)
         )
+
         ata_s = torch.nan_to_num(ata, nan=180.0, posinf=180.0, neginf=-180.0)
         aa_s = torch.nan_to_num(aa, nan=180.0, posinf=180.0, neginf=-180.0)
         target_ata_s = torch.nan_to_num(target_ata, nan=180.0, posinf=180.0, neginf=-180.0)
+
         own_alt = -o[:, 2]
         target_alt = -t[:, 2]
+
         own_alt_s = torch.nan_to_num(own_alt, nan=0.0, posinf=20000.0, neginf=0.0)
         target_alt_s = torch.nan_to_num(target_alt, nan=0.0, posinf=20000.0, neginf=0.0)
+
         if self._is_gun_curriculum():
             wez = self.stage.wez
             minimum, maximum, half = (
@@ -836,6 +940,7 @@ class CompetitionLoiterCurriculumEnv:
                 float(wez["max_range_m"]),
                 float(wez["angle_deg"]) / 2,
             )
+
             inside = (
                 (maximum > minimum)
                 & distance_ok
@@ -843,6 +948,7 @@ class CompetitionLoiterCurriculumEnv:
                 & (distance_s <= maximum)
                 & (ata_s.abs() <= half)
             )
+
             red_inside = (
                 (maximum > minimum)
                 & distance_ok
@@ -854,15 +960,20 @@ class CompetitionLoiterCurriculumEnv:
                 inside, self.wez_streak + valid.float(), torch.zeros_like(self.wez_streak)
             )
             self.ep_wez_streak_max = torch.maximum(self.ep_wez_streak_max, self.wez_streak)
+
             dt = max(1e-6, float(self.stage.step_ratio) / float(self.hz))
             closing = (self.prev_distance - distance_s) / dt
+
             x_tgt, y_tgt, z_tgt = self._target_frame_rel(o, t)
             phi_now = self._gun_phi(distance_s, ata_s, aa_s)
+
             reward = torch.full(
                 (self.n,), float(cfg.get("step_penalty", -0.002)), device=self.device
             )
+
             reward += float(cfg.get("damage_scale", 12.0)) * total_target_damage
             reward -= float(cfg.get("own_damage_scale", 18.0)) * total_own_damage
+
             cap = max(1.0, float(cfg.get("dwell_cap_steps", 20.0)))
             reward += (
                 float(cfg.get("dwell_scale", 0.03))
@@ -872,7 +983,9 @@ class CompetitionLoiterCurriculumEnv:
             reward += float(cfg.get("phi_scale", 0.0)) * (
                 float(cfg.get("phi_gamma", 0.99)) * phi_now - self.prev_phi
             )
+
             aim_scale = float(cfg.get("aim_scale", 0.0))
+
             if aim_scale > 0.0:
                 aim_sigma = max(1.0, float(cfg.get("aim_sigma_deg", 5.0)))
                 aim_range_center = float(
@@ -886,14 +999,17 @@ class CompetitionLoiterCurriculumEnv:
                     - torch.square((distance_s - aim_range_center) / aim_range_sigma)
                 )
                 reward += aim_scale * aim_score * distance_ok.float()
+
             inner_soft = float(cfg.get("inner_soft_m", 300.0))
             inner_violation = distance_ok & (distance_s < inner_soft)
             inner_term = (
                 (inner_soft - distance_s).clamp_min(0.0) / max(1.0, inner_soft)
             ).square() * (1.0 + (closing.clamp_min(0.0) / 150.0))
             reward -= float(cfg.get("inner_penalty_scale", 0.65)) * inner_term
+
             hard_collision = distance_ok & (distance_s < float(cfg.get("hard_collision_m", 130.0)))
             reward -= float(cfg.get("hard_collision_penalty", 8.0)) * hard_collision.float()
+
             crossed = (self.prev_x_tgt < -50.0) & (x_tgt > 50.0)
             bad_3_9 = (
                 crossed
@@ -903,6 +1019,7 @@ class CompetitionLoiterCurriculumEnv:
                 & (total_target_damage < 1e-4)
             )
             reward -= float(cfg.get("bad_3_9_penalty", 0.55)) * bad_3_9.float()
+
             ahead_no_aim = (
                 (x_tgt > float(cfg.get("ahead_no_aim_x_m", 100.0)))
                 & (distance_s < float(cfg.get("ahead_no_aim_range_m", 1500.0)))
@@ -910,6 +1027,7 @@ class CompetitionLoiterCurriculumEnv:
                 & (~inside)
             )
             reward -= float(cfg.get("ahead_no_aim_penalty", 0.025)) * ahead_no_aim.float()
+
             reward -= float(cfg.get("red_wez_penalty", 0.08)) * red_inside.float()
             reward -= float(cfg.get("low_altitude_penalty", 2.0)) * (
                 (own_alt_s < float(cfg.get("low_altitude_m", 1000.0))).float()
@@ -917,15 +1035,19 @@ class CompetitionLoiterCurriculumEnv:
             reward -= float(cfg.get("action_rate_penalty", 0.001)) * (
                 a - self.prev_policy_action
             ).square().sum(1)
+
             reward += float(cfg.get("altitude_margin_scale", 0)) * self._altitude_margin(
                 own_alt_s, cfg.get("altitude_floor_m", 1800), cfg.get("altitude_nominal_m", 7000)
             )
+
             track_scale = float(cfg.get("track_scale", 0.0))
+
             if track_scale > 0.0:
                 trail = float(cfg.get("track_trail_m", 900.0))
                 sx = max(1.0, float(cfg.get("track_x_sigma_m", 450.0)))
                 sy = max(1.0, float(cfg.get("track_y_sigma_m", 300.0)))
                 sz = max(1.0, float(cfg.get("track_z_sigma_m", 250.0)))
+
                 track_score = torch.exp(
                     -torch.square((x_tgt + trail) / sx)
                     - torch.square(y_tgt / sy)
@@ -934,11 +1056,14 @@ class CompetitionLoiterCurriculumEnv:
                 track_score = torch.nan_to_num(track_score, nan=0.0, posinf=0.0, neginf=0.0).clamp(
                     0, 1
                 )
+
                 closure_limit = float(cfg.get("track_closure_limit_mps", 80.0))
                 closure_sigma = max(1.0, float(cfg.get("track_closure_sigma_mps", 45.0)))
+
                 closure_violation = distance_ok & (closing.abs() > closure_limit)
                 overshoot = distance_ok & (x_tgt > float(cfg.get("track_overshoot_x_m", -80.0)))
                 too_close = distance_ok & (distance_s < float(cfg.get("track_too_close_m", 260.0)))
+
                 reward += track_scale * track_score
                 reward -= float(cfg.get("track_closure_penalty", 0.03)) * torch.square(
                     (closing.abs() - closure_limit).clamp_min(0.0) / closure_sigma
@@ -995,6 +1120,7 @@ class CompetitionLoiterCurriculumEnv:
             (self.ep_target_damage + total_target_damage)
             < float(cfg.get("target_crash_valid_damage_window", 0.05))
         )
+
         if self._is_gun_curriculum():
             reward -= (
                 float(cfg.get("target_crash_without_damage_penalty", 6.0))
@@ -1050,6 +1176,7 @@ class CompetitionLoiterCurriculumEnv:
         self.prev_x_tgt = torch.where(valid, x_tgt, self.prev_x_tgt)
         self.prev_phi = torch.where(valid, phi_now, self.prev_phi)
         self.prev_policy_action = torch.where(valid[:, None], a, self.prev_policy_action)
+
         if done.any():
             m = done
             count = int(m.sum())
@@ -1101,12 +1228,15 @@ class CompetitionLoiterCurriculumEnv:
             bucket_metrics = {}
             bucket_ids = getattr(self, "init_bucket_id", None)
             bucket_names = getattr(self, "bucket_names", ["default"])
+
             if bucket_ids is not None:
                 for idx, name in enumerate(bucket_names):
                     bm = m & (bucket_ids == idx)
                     bcount = int(bm.sum())
+
                     if bcount <= 0:
                         continue
+
                     bsteps = episode_steps[bm]
                     bsafe_distance = torch.where(
                         self.ep_distance_valid,
@@ -1159,6 +1289,7 @@ class CompetitionLoiterCurriculumEnv:
         self.history = torch.where(valid[:, None, None], new_history, self.history)
         obs = self.history.reshape(self.n, -1)
         self.cached_observation = torch.where(valid[:, None], obs, self.cached_observation)
+
         return (
             self.cached_observation,
             reward,
@@ -1200,14 +1331,18 @@ class CompetitionLoiterCurriculumEnv:
     def pop_completed_summary(self):
         if not self.completed:
             return None
+
         records = self.completed
         self.completed = []
         bucket_totals = {}
         numeric_records = []
+
         for record in records:
             numeric_records.append({k: v for k, v in record.items() if k != "bucket_metrics"})
+
             for name, metrics in record.get("bucket_metrics", {}).items():
                 dst = bucket_totals.setdefault(name, {})
+
                 for key, value in metrics.items():
                     dst[key] = dst.get(key, 0.0) + float(value)
         keys = set().union(*(x.keys() for x in numeric_records))
@@ -1272,10 +1407,12 @@ class CompetitionLoiterCurriculumEnv:
         )
         bucket_positive = {metric: [] for metric in positive_metrics}
         bucket_rates = {metric: [] for metric in rate_metrics}
+
         for name, metrics in bucket_totals.items():
             bcount = max(1.0, float(metrics.get("episodes", 0.0)))
             prefix = f"bucket_{name}"
             summary[f"{prefix}_episodes"] = float(metrics.get("episodes", 0.0))
+
             for metric in positive_metrics:
                 if metric in metrics:
                     value = float(metrics.get(metric, 0.0)) / bcount

@@ -1,5 +1,3 @@
-"""Read-only adapter for the current AIP randomized-loiter kill curriculum."""
-
 from pathlib import Path
 import copy, os, yaml
 
@@ -212,6 +210,7 @@ class LoiterStage:
     def __setattr__(self, name, value):
         if getattr(self, "_frozen", False):
             raise AttributeError("LoiterStage is immutable")
+
         object.__setattr__(self, name, value)
 
 
@@ -222,6 +221,7 @@ def _is_number(value):
 def _lerp(a, b, t):
     if _is_number(a) and _is_number(b):
         return float(a) + (float(b) - float(a)) * t
+
     if (
         isinstance(a, list)
         and isinstance(b, list)
@@ -229,11 +229,14 @@ def _lerp(a, b, t):
         and all(_is_number(x) for x in a + b)
     ):
         return [_lerp(x, y, t) for x, y in zip(a, b)]
+
     if isinstance(a, dict) and isinstance(b, dict):
         out = copy.deepcopy(a)
+
         for key, value in b.items():
             out[key] = _lerp(a[key], value, t) if key in a else copy.deepcopy(value)
         return out
+
     return copy.deepcopy(b if t >= 0.5 else a)
 
 
@@ -281,6 +284,7 @@ def _tight_safety_reward(reward, penalty=2.0):
     out["low_altitude_penalty"] = max(float(out.get("low_altitude_penalty", 1.0)), float(penalty))
     out["altitude_floor_m"] = max(float(out.get("altitude_floor_m", 1500.0)), 2000.0)
     out["altitude_margin_scale"] = max(float(out.get("altitude_margin_scale", 0.0)), 0.005)
+
     return out
 
 
@@ -292,6 +296,7 @@ def _with_numeric_safety_conditions(conditions):
     # on stale/contaminated summaries.
     out.setdefault("nonfinite_rate_max", 0.003)
     out.setdefault("distance_valid_rate_min", 0.995)
+
     return out
 
 
@@ -304,8 +309,10 @@ def _with_final_kill_bridge(stages):
     * target/ownship randomization becomes final-width;
     * WEZ shrinks from 6 deg / 1500 m to 2 deg / 914.4 m.
     """
+
     if len(stages) < 12:
         return stages
+
     wide = stages[10]
     final = stages[11]
     prefix = [_stage_copy(stage, index=i) for i, stage in enumerate(stages[:11])]
@@ -399,6 +406,7 @@ def _with_final_kill_bridge(stages):
         reward=_tight_safety_reward(final.reward, 2.5),
         advance_conditions=final_conditions,
     )
+
     return prefix + [bridge1, bridge2, bridge3, final_stage]
 
 
@@ -502,6 +510,7 @@ def _track_reward(*, trail_m, scale=0.10, phi_scale=0.015, inner_soft_m=260.0):
     reward["aim_sigma_deg"] = 8.0
     reward["aim_range_center_m"] = float(trail_m)
     reward["aim_range_sigma_m"] = max(250.0, float(trail_m) * 0.45)
+
     return reward
 
 
@@ -536,17 +545,20 @@ def _nose_bridge_reward(*, trail_m=760.0, phi_scale=0.070, inner_soft_m=305.0):
             "track_closure_penalty": 0.070,
         }
     )
+
     return reward
 
 
 def _gun_target_mix(*items):
     total = sum(float(weight) for _, weight in items)
+
     return [{"policy": name, "weight": float(weight) / total} for name, weight in items]
 
 
 def _bucket(name, weight, **kwargs):
     out = {"name": name, "weight": float(weight)}
     out.update(kwargs)
+
     return out
 
 
@@ -604,6 +616,7 @@ def _gun_stage(
         "max_time_to_wez_fraction": float(max_time_to_wez_fraction),
         "feasible_resample_attempts": 10,
     }
+
     if bucket_mix:
         total = sum(float(item.get("weight", 1.0)) for item in bucket_mix)
         target_randomization["bucket_mix"] = [
@@ -624,6 +637,7 @@ def _gun_stage(
         "init_feasible_rate_min": 0.90,
     }
     conditions.update(advance or {})
+
     return LoiterStage(
         index=index,
         name=name,
@@ -2432,6 +2446,7 @@ def _with_bucket_gun_curriculum():
             },
         ),
     ]
+
     return [_stage_copy(stage, index=i) for i, stage in enumerate(stages)]
 
 
@@ -2446,14 +2461,20 @@ def load_stages(stage_dir=None, schedule=None):
         .strip()
         .lower()
     )
+
     if selected in GUN_CURRICULUM_SCHEDULE_NAMES:
         return _with_gun_curriculum()
+
     if selected in BUCKET_GUN_CURRICULUM_SCHEDULE_NAMES:
         return _with_bucket_gun_curriculum()
+
     directory = Path(stage_dir) if stage_dir else AIP_STAGE_DIR
+
     if not directory.is_dir():
         raise FileNotFoundError(f"AIP loiter stage directory not found: {directory}")
+
     stages = []
+
     for i, filename in enumerate(FILES):
         path = directory / filename
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -2476,8 +2497,10 @@ def load_stages(stage_dir=None, schedule=None):
         )
     if selected in {"", "aip", "default", "original"}:
         return stages
+
     if selected in BRIDGE_SCHEDULE_NAMES:
         return _with_final_kill_bridge(stages)
+
     raise ValueError(
         f"Unknown loiter stage schedule: {selected!r}. Use 'aip', 'kill_bridge', 'gun_curriculum', or 'gun_bucket_curriculum'."
     )
@@ -2485,19 +2508,26 @@ def load_stages(stage_dir=None, schedule=None):
 
 def advancement_satisfied(stage, metrics):
     reasons = []
+
     for condition, threshold in stage.advance_conditions.items():
         if condition == "min_valid_samples":
             value = float(metrics.get("episodes", 0.0))
+
             if value < threshold:
                 return False, f"episodes={value:.4g} < {threshold}"
+
             reasons.append(f"episodes={value:.4g}")
             continue
+
         key = condition.removesuffix("_min").removesuffix("_max")
         value = float(metrics.get(key, float("nan")))
+
         if condition.endswith("_min") and not value >= threshold:
             return False, f"{key}={value:.4g} < {threshold}"
+
         if condition.endswith("_max") and not value <= threshold:
             return False, f"{key}={value:.4g} > {threshold}"
+
         reasons.append(f"{key}={value:.4g}")
     return True, ", ".join(reasons)
 

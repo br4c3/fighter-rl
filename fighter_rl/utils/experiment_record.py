@@ -1,5 +1,3 @@
-"""Reproducibility helpers for fast AIP/NeuralPlane experiments."""
-
 import hashlib
 import json
 import os
@@ -14,17 +12,22 @@ ROOT = Path(__file__).resolve().parents[2]
 def _jsonable(value):
     if isinstance(value, Path):
         return str(value)
+
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
+
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
+
     try:
         import torch
 
         if isinstance(value, torch.Tensor):
             if value.numel() == 1:
                 return value.detach().cpu().item()
+
             return value.detach().cpu().tolist()
+
     except Exception:
         pass
     return value
@@ -33,10 +36,14 @@ def _jsonable(value):
 def sha256_file(path):
     if not path:
         return None
+
     p = Path(path)
+
     if not p.is_file():
         return None
+
     h = hashlib.sha256()
+
     with p.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
@@ -46,8 +53,10 @@ def sha256_file(path):
 def file_record(path):
     if not path:
         return {"path": ""}
+
     p = Path(path)
     out = {"path": str(p), "exists": p.exists()}
+
     if p.is_file():
         out["size_bytes"] = p.stat().st_size
         out["sha256"] = sha256_file(p)
@@ -86,6 +95,7 @@ def selected_environment():
         "ADVANCE_PATIENCE",
         "RESUME",
     )
+
     return {key: os.environ[key] for key in keys if key in os.environ}
 
 
@@ -102,12 +112,14 @@ def torch_record():
             "cudnn_benchmark": bool(getattr(torch.backends.cudnn, "benchmark", False)),
             "cudnn_deterministic": bool(getattr(torch.backends.cudnn, "deterministic", False)),
         }
+
         if torch.cuda.is_available():
             out["device_count"] = int(torch.cuda.device_count())
             out["devices"] = [
                 torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())
             ]
         return out
+
     except Exception as exc:
         return {"error": repr(exc)}
 
@@ -122,14 +134,18 @@ def code_records(extra_files=None):
         ROOT / "fighter_rl" / "envs" / "bt_policy.py",
         ROOT / "fighter_rl" / "utils" / "experiment_record.py",
     ]
+
     if extra_files:
         files.extend(Path(p) for p in extra_files)
     seen = set()
     out = []
+
     for path in files:
         key = str(Path(path).resolve())
+
         if key in seen:
             continue
+
         seen.add(key)
         out.append(file_record(path))
     return out
@@ -180,6 +196,7 @@ def write_experiment_manifest(
 
 def append_jsonl(path, row):
     path.parent.mkdir(parents=True, exist_ok=True)
+
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(_jsonable(row), ensure_ascii=False, sort_keys=True))
         f.write("\n")

@@ -1,17 +1,3 @@
-"""Fast tensor-native PPO curriculum training for AIP/NeuralPlane.
-
-This is the restored fast path:
-
-    CompetitionLoiterCurriculumEnv (GPU batch)
-    -> plain PyTorch PPO update
-    -> .pt checkpoints
-    -> optional RLlib lightweight bundle export/check
-
-It intentionally does not use RLlib for rollout collection.  RLlib is only used
-later by ``export_fast_ppo_to_rllib_bundle.py`` to prove/perform bundle
-compatibility.
-"""
-
 import json
 import random
 import time
@@ -31,6 +17,7 @@ from fighter_rl.utils.experiment_record import append_jsonl, write_experiment_ma
 def average_window(window):
     if not window:
         return {}
+
     # Each item in ``window`` is not a raw log line.  It is an episodic summary
     # emitted by CompetitionLoiterCurriculumEnv.pop_completed_summary(), and it
     # may represent anything from a handful of completed episodes to a whole
@@ -40,14 +27,17 @@ def average_window(window):
     total_weight = sum(weights)
     keys = set().union(*(item.keys() for item in window))
     out = {}
+
     if "episodes" in keys:
         out["episodes"] = total_weight
     for key in keys:
         if key == "episodes":
             continue
+
         if total_weight > 0.0:
             numerator = 0.0
             denominator = 0.0
+
             for item, weight in zip(window, weights):
                 if key in item and weight > 0.0:
                     numerator += float(item[key]) * weight
@@ -55,7 +45,9 @@ def average_window(window):
             if denominator > 0.0:
                 out[key] = numerator / denominator
             continue
+
         values = [float(item[key]) for item in window if key in item]
+
         if values:
             out[key] = sum(values) / len(values)
     return out
@@ -71,9 +63,11 @@ def format_gate(
 ):
     if window_len < required:
         return f"pending({window_len}/{required})"
+
     ok, reason = advancement_satisfied(stage, rolling)
     prefix = "pass:" if ok else "block:"
     text = prefix + reason.replace(" ", "")
+
     if ok and required_passes > 1:
         text += f",pass_streak={pass_streak}/{required_passes}"
     return text
@@ -81,6 +75,7 @@ def format_gate(
 
 def format_safety_metrics(rolling):
     """Compact console view for the gun-curriculum guardrail metrics."""
+
     if not any(
         key in rolling
         for key in (
@@ -102,6 +97,7 @@ def format_safety_metrics(rolling):
         )
     ):
         return ""
+
     return (
         f"dmg={rolling.get('target_damage', 0):.3f}/{rolling.get('own_damage', 0):.3f} "
         f"wez={rolling.get('ep_wez_steps', 0):.1f} "
@@ -141,6 +137,7 @@ def format_training_line(
         loss_text,
         f"ep={episodes:.0f}",
     ]
+
     if rolling:
         parts.extend(
             [
@@ -153,9 +150,11 @@ def format_training_line(
             ]
         )
         safety = format_safety_metrics(rolling)
+
         if safety:
             parts.append(safety)
     parts.append(f"gate={gate}")
+
     if extra:
         parts.append(extra)
     return " ".join(part for part in parts if part)
@@ -219,12 +218,14 @@ def save_checkpoint(
 def load_resume(path, model, device):
     payload = torch.load(path, map_location=device, weights_only=False)
     variant = payload.get("variant")
+
     if variant and variant != model.profile.variant:
         raise ValueError(
             f"Resume checkpoint variant mismatch: checkpoint={variant}, "
             f"requested={model.profile.variant}"
         )
     model.load_state_dict(payload["model"])
+
     return payload
 
 
@@ -245,13 +246,17 @@ def ppo_update_mlp(
     flat_old_logp = old_logp.reshape(-1)[mask]
     flat_adv = advantages.reshape(-1)[mask]
     flat_ret = returns.reshape(-1)[mask]
+
     if flat_adv.numel() < 2:
         return []
+
     flat_adv = (flat_adv - flat_adv.mean()) / (flat_adv.std(unbiased=False) + 1e-8)
     losses = []
     count = flat_adv.shape[0]
+
     for _ in range(cfg.epochs):
         order = torch.randperm(count, device=flat_adv.device)
+
         for start in range(0, count, cfg.minibatch):
             idx = order[start : start + cfg.minibatch]
             output = model.forward_step(flat_obs[idx])
@@ -276,14 +281,18 @@ def ppo_update_mlp(
                 - cfg.entropy_coef * entropy.mean()
                 + cfg.action_mean_l2_coef * mean_loss
             )
+
             if not bool(torch.isfinite(loss)):
                 continue
+
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             grad_norm = nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+
             if not bool(torch.isfinite(grad_norm)):
                 optimizer.zero_grad(set_to_none=True)
                 continue
+
             optimizer.step()
             losses.append(loss.detach())
     return losses
@@ -304,8 +313,10 @@ def ppo_update_lstm(
     t_steps, n_envs, _ = obs.shape
     envs_per_minibatch = max(1, int(cfg.minibatch) // max(1, t_steps))
     losses = []
+
     for _ in range(cfg.epochs):
         order = torch.randperm(n_envs, device=obs.device)
+
         for start in range(0, n_envs, envs_per_minibatch):
             idx = order[start : start + envs_per_minibatch]
             h0 = initial_state[0][:, idx].contiguous()
@@ -319,8 +330,10 @@ def ppo_update_lstm(
                 mean_clip=cfg.action_mean_clip,
             )
             mask = valid[:, idx].reshape(-1)
+
             if not bool(mask.any()):
                 continue
+
             action_mean = output.logits[..., :4].reshape(-1, 4)[mask]
             mb_old_logp = old_logp[:, idx].reshape(-1)[mask]
             mb_adv = advantages[:, idx].reshape(-1)[mask]
@@ -328,8 +341,10 @@ def ppo_update_lstm(
             mb_logp = logp.reshape(-1)[mask]
             mb_entropy = entropy.reshape(-1)[mask]
             mb_value = output.value.reshape(-1)[mask]
+
             if mb_adv.numel() < 2:
                 continue
+
             mb_adv = (mb_adv - mb_adv.mean()) / (mb_adv.std(unbiased=False) + 1e-8)
             ratio = (mb_logp - mb_old_logp).exp()
             policy_loss = -torch.minimum(
@@ -344,14 +359,18 @@ def ppo_update_lstm(
                 - cfg.entropy_coef * mb_entropy.mean()
                 + cfg.action_mean_l2_coef * mean_loss
             )
+
             if not bool(torch.isfinite(loss)):
                 continue
+
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             grad_norm = nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+
             if not bool(torch.isfinite(grad_norm)):
                 optimizer.zero_grad(set_to_none=True)
                 continue
+
             optimizer.step()
             losses.append(loss.detach())
     return losses
@@ -360,6 +379,7 @@ def ppo_update_lstm(
 def main():
     cfg = load_training_config("configs/ppo_lstm.json")
     profile = get_profile(cfg.variant)
+
     if cfg.horizon <= 0:
         cfg.horizon = profile.max_seq_len if profile.use_lstm else 64
     if profile.use_lstm and cfg.horizon > profile.max_seq_len:
@@ -371,10 +391,12 @@ def main():
 
     torch.manual_seed(cfg.seed)
     random.seed(cfg.seed)
+
     if cfg.device == "cpu":
         torch.set_num_threads(1)
     device = torch.device(cfg.device)
     stages = load_stages(schedule=cfg.stage_schedule)
+
     if cfg.stop_stage is None:
         cfg.stop_stage = len(stages) - 1
     if cfg.stop_stage >= len(stages):
@@ -384,9 +406,11 @@ def main():
     total_valid = 0
     resume_update = 0
     start_stage = cfg.start_stage
+
     if cfg.resume:
         payload = load_resume(cfg.resume, model, device)
         saved_stage = int(payload.get("stage_index", start_stage))
+
         if cfg.start_stage == 0:
             start_stage = saved_stage
             resume_update = int(payload.get("stage_update", 0))
@@ -412,10 +436,12 @@ def main():
     metrics_log_path = run / "metrics.jsonl"
 
     curriculum_log = []
+
     for stage_index in range(start_stage, cfg.stop_stage + 1):
         stage = stages[stage_index]
         stage_dir = run / f"stage_{stage_index:02d}_{stage.name}"
         stage_dir.mkdir(parents=True, exist_ok=True)
+
         env = CompetitionLoiterCurriculumEnv(
             stage,
             num_envs=cfg.num_envs,
@@ -426,16 +452,20 @@ def main():
             include_previous_action=profile.include_previous_action,
         )
         obs_now = env.reset()
+
         if obs_now.shape[-1] != profile.obs_dim:
             raise RuntimeError(
                 f"Observation contract mismatch for {cfg.variant}: "
                 f"env returned {obs_now.shape[-1]}, expected {profile.obs_dim}"
             )
+
         state = model.initial_state(cfg.num_envs, device)
         window = deque(maxlen=cfg.advance_window)
+
         first_update = resume_update + 1 if stage_index == start_stage else 1
         advanced = False
         pass_streak = 0
+
         print(
             f"[stage {stage_index}/{cfg.stop_stage}] {stage.name} "
             f"variant={cfg.variant} obs={profile.obs_dim} frames={profile.temporal_frames} "
@@ -453,7 +483,9 @@ def main():
             reward_buf = []
             done_buf = []
             valid_buf = []
+
             initial_state = model.detach_state(state)
+
             for _ in range(cfg.horizon):
                 with torch.no_grad():
                     action, raw, logp, value, next_state = model.sample_step(
@@ -463,8 +495,10 @@ def main():
                         log_std_max=cfg.log_std_max,
                         mean_clip=cfg.action_mean_clip,
                     )
+
                 next_obs, reward, done, info = env.step(action)
                 valid = info["valid"].bool()
+
                 obs_buf.append(obs_now)
                 raw_buf.append(raw)
                 logp_buf.append(logp)
@@ -472,13 +506,16 @@ def main():
                 reward_buf.append(reward)
                 done_buf.append((done | ~valid).float())
                 valid_buf.append(valid)
+
                 state = model.mask_state(model.detach_state(next_state), info["active"].bool())
                 obs_now = next_obs
+
                 if env.all_inactive():
                     break
 
             summary = env.pop_completed_summary()
             summary_added = False
+
             if summary:
                 window.append(summary)
                 summary_added = True
@@ -493,22 +530,27 @@ def main():
 
             with torch.no_grad():
                 next_value = model.forward_step(obs_now, state).value
+
             advantages = torch.zeros_like(rewards)
             last = torch.zeros(cfg.num_envs, device=device)
+
             for t in reversed(range(rewards.shape[0])):
                 nv = next_value if t == rewards.shape[0] - 1 else values[t + 1]
                 nonterminal = (1.0 - dones[t]) * valids[t].float()
                 delta = (rewards[t] + cfg.gamma * nv * nonterminal - values[t]) * valids[t].float()
                 last = delta + cfg.gamma * cfg.gae_lambda * nonterminal * last
                 advantages[t] = last
+
             returns = advantages + values
 
             valid_count = int(valids.sum().item())
             total_valid += valid_count
+
             min_valid_count = max(
                 2,
                 int(valids.numel() * max(0.0, float(cfg.min_valid_fraction))),
             )
+
             if valid_count < min_valid_count:
                 rolling = average_window(window)
                 reward_mean = rewards[valids].mean().item() if valid_count else float("nan")
@@ -555,8 +597,10 @@ def main():
                         "gate": gate,
                     },
                 )
+
                 obs_now = env.reset()
                 state = model.initial_state(cfg.num_envs, device)
+
                 continue
 
             if profile.use_lstm:
@@ -591,9 +635,11 @@ def main():
             decision_max = int(env.steps.max().item())
             gate_ok = False
             display_streak = pass_streak
+
             if summary_added and len(window) == cfg.advance_window:
                 gate_ok, _ = advancement_satisfied(stage, rolling)
                 display_streak = pass_streak + 1 if gate_ok else 0
+
             gate = format_gate(
                 stage,
                 rolling,
@@ -602,6 +648,7 @@ def main():
                 display_streak,
                 cfg.advance_patience,
             )
+
             if not losses:
                 print(
                     format_training_line(
@@ -639,7 +686,9 @@ def main():
                 obs_now = env.reset()
                 state = model.initial_state(cfg.num_envs, device)
                 continue
+
             loss_mean = torch.stack(losses).mean().item()
+
             if update % max(1, int(cfg.log_interval)) == 0 or summary_added:
                 print(
                     format_training_line(
@@ -655,6 +704,7 @@ def main():
                     ),
                     flush=True,
                 )
+
             append_jsonl(
                 metrics_log_path,
                 {
@@ -695,9 +745,11 @@ def main():
             if not cfg.no_auto_advance and summary_added and len(window) == cfg.advance_window:
                 ok, reason = advancement_satisfied(stage, rolling)
                 pass_streak = pass_streak + 1 if ok else 0
+
                 if ok:
                     if pass_streak < max(1, cfg.advance_patience):
                         continue
+
                     advanced = True
                     save_checkpoint(
                         stage_dir / "final_checkpoint.pt",
@@ -753,9 +805,11 @@ def main():
             )
             print(f"[stalled] stage={stage_index}; stopping curriculum", flush=True)
             break
+
         resume_update = 0
 
     print(run, flush=True)
+
     return 0
 
 
