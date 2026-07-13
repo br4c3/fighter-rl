@@ -11,11 +11,11 @@
 
 | 구간 | Stage | 목적 | Reward 성격 |
 | --- | --- | --- | --- |
-| Trail hold | 0-4 | 적 후방 가까운 위치를 안정적으로 유지 | 위치 추적 중심, damage 보상 없음 |
-| Nose bridge | 5 | 후방 추적에서 nose-on/사격 자세로 연결 | 추적 + 조준 + 약한 damage 보상 |
-| Gun WEZ | 6-9 | WEZ 안에서 조준/체류/피해 누적 | damage, dwell, phi 개선 중심 |
-| Close BFM entry | 10-12 | 가까운 거리에서 각도/3-9 line 관리 | damage 중심, phi 보상은 점진 감소 |
-| BT pressure | 13-14 | 가까운 거리에서 BT/defensive target 대응 | damage 중심, 복잡한 상대 기동 대응 |
+| Trail hold | 0-5 | 적 후방 가까운 위치를 안정적으로 유지 | 위치 추적 중심, damage 보상 없음 |
+| Nose bridge | 6 | 후방 추적에서 nose-on/사격 자세로 연결 | 추적 + 조준 + 약한 damage 보상 |
+| Gun WEZ | 7-10 | WEZ 안에서 조준/체류/피해 누적 | damage, dwell, phi 개선 중심 |
+| Close BFM entry | 11-13 | 가까운 거리에서 각도/3-9 line 관리 | damage 중심, phi 보상은 점진 감소 |
+| BT pressure | 14-15 | 가까운 거리에서 BT/defensive target 대응 | damage 중심, 복잡한 상대 기동 대응 |
 
 현재 close-range curriculum 적용으로 모든 stage의 초기 거리는 최대
 `1500m` 안쪽으로 제한된다. 후반부도 먼 BFM 시작이 아니라 가까운 교전
@@ -48,24 +48,25 @@
 | 0 | `T0_anchor_trail_hold` | 780-940m | `track_scale=0.130`, `track_trail_m=850`, damage 없음 |
 | 1 | `T1_range_closure_trail` | 730-1050m | `track_scale=0.125`, closure/range 변화 적응 |
 | 2 | `T2_angular_trail` | 820-950m | `track_scale=0.120`, `phi_scale=0.006`, 작은 ATA/AA 교정 |
-| 3 | `T3_weak_turn_trail` | 780-1150m | `track_scale=0.115`, weak turn target 추적 |
-| 4 | `T4_maneuver_trail` | 850-1400m | `track_scale=0.110`, jink/turn target 추적 |
-| 5 | `A0_nose_on_trail_bridge` | 500-930m | `track_scale=0.070`, `aim_scale=0.055`, `damage_scale=6` |
-| 6 | `G0_in_wez_hold` | 320-860m | `damage_scale=12`, `dwell_scale=0.03`, `phi_scale=0.110`, `aim_scale=0.025` |
-| 7 | `G1_wez_boundary_hold` | 260-940m | WEZ edge 유지, `phi_scale=0.090`, `aim_scale=0.015` |
-| 8 | `G2_small_reacquire` | 450-1100m | 작은 재획득, `phi_scale=0.075`, `aim_scale=0.008` |
-| 9 | `G3_moving_gun_track` | 450-1300m | 움직이는 target gun track, `phi_scale=0.058` |
-| 10 | `E0_outer_rear_entry` | 800-1500m | 가까운 rear entry, `phi_scale=0.040` |
-| 11 | `E1_side_rear_entry` | 900-1500m | side/rear 각도 관리, `phi_scale=0.028` |
-| 12 | `E2_three_nine_management` | 900-1500m | 3-9 line 관리, `phi_scale=0.018` |
-| 13 | `B0_bt_intro` | 1000-1500m | BT target intro, `phi_scale=0.010` |
-| 14 | `B1_short_bfm` | 1100-1500m | short BFM, `phi_scale=0.006` |
+| 3 | `T3_weak_turn_trail` | 780-1150m | 강화 gate: track `0.60`, worst bucket `0.52`, closure violation `0.11` |
+| 4 | `T35_mild_maneuver_trail` | 820-1250m | Stage 3 replay 30% + mild maneuver 70% |
+| 5 | `T4_maneuver_trail` | 850-1400m | `track_scale=0.110`, jink/turn target 추적 |
+| 6 | `A0_nose_on_trail_bridge` | 500-930m | `track_scale=0.070`, `aim_scale=0.055`, `damage_scale=6` |
+| 7 | `G0_in_wez_hold` | 320-860m | `damage_scale=12`, `dwell_scale=0.03`, `phi_scale=0.110`, `aim_scale=0.025` |
+| 8 | `G1_wez_boundary_hold` | 260-940m | WEZ edge 유지, `phi_scale=0.090`, `aim_scale=0.015` |
+| 9 | `G2_small_reacquire` | 450-1100m | 작은 재획득, `phi_scale=0.075`, `aim_scale=0.008` |
+| 10 | `G3_moving_gun_track` | 450-1300m | 움직이는 target gun track, `phi_scale=0.058` |
+| 11 | `E0_outer_rear_entry` | 800-1500m | 가까운 rear entry, `phi_scale=0.040` |
+| 12 | `E1_side_rear_entry` | 900-1500m | side/rear 각도 관리, `phi_scale=0.028` |
+| 13 | `E2_three_nine_management` | 900-1500m | 3-9 line 관리, `phi_scale=0.018` |
+| 14 | `B0_bt_intro` | 1000-1500m | BT target intro, `phi_scale=0.010` |
+| 15 | `B1_short_bfm` | 1100-1500m | short BFM, `phi_scale=0.006` |
 
-공통적으로 stage 6 이후 기본 gun reward는 다음 값을 쓴다.
+공통적으로 stage 7 이후 기본 gun reward는 다음 값을 쓴다.
 
-Stage 5에서 gun reward로 갑자기 전환할 때 조준 자세가 무너지는 것을
-막기 위해 stage 6-8에는 작은 aim shaping을 남기고 점진적으로 제거한다.
-Stage 9부터는 `aim_scale=0`인 기본 gun reward만 사용한다.
+Stage 6에서 gun reward로 갑자기 전환할 때 조준 자세가 무너지는 것을
+막기 위해 stage 7-9에는 작은 aim shaping을 남기고 점진적으로 제거한다.
+Stage 10부터는 `aim_scale=0`인 기본 gun reward만 사용한다.
 
 | Key | Value |
 | --- | ---: |
@@ -103,3 +104,7 @@ Stage 9부터는 `aim_scale=0`인 기본 gun reward만 사용한다.
 `abs(closing)`이 제한을 넘은 step 비율이 `track_closure_violation_fraction`
 (기본 5%)을 초과한 에피소드의 비율이다. 진단할 때는 `clstep`, `|cl|`,
 `rerr`, `open` 로그를 함께 본다.
+
+여기서 `open`은 action 크기가 아니라, 목표가 trail 거리보다 먼 상태에서
+closure가 음수여서 더 벌어지는 step의 비율이다. 실제 제어 입력은 PPO 로그의
+`act`, `astd`, `sat`, `dact`, `cmd=roll/pitch/rudder/throttle`로 확인한다.

@@ -74,6 +74,10 @@ LSTM variant는 다음과 같다.
 
 MLP variant인 `ppo_mlp`, `sac_mlp`는 4 frame stack을 써서 observation이 80차원이다.
 
+PPO 로그는 total loss 외에도 policy/value loss, entropy, approximate KL,
+clip fraction, explained variance, gradient norm과 실제 actuator command의 평균,
+표준편차, saturation rate, delta action을 기록한다.
+
 ## 비행 Surrogate
 
 | 경로 | 역할 |

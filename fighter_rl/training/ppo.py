@@ -167,6 +167,60 @@ def format_training_line(
     return " ".join(part for part in parts if part)
 
 
+def action_diagnostics(actions, valid):
+    """Summarize actual clipped actuator commands for one rollout."""
+
+    actions = actions.detach()
+    selected = actions[valid]
+
+    if selected.numel() == 0:
+        return {}
+
+    metrics = {
+        "action_abs_mean": float(selected.abs().mean()),
+        "action_std": float(selected.std(unbiased=False)),
+        "action_saturation_rate": float((selected.abs() >= 0.95).float().mean()),
+        "roll_command_mean": float(selected[:, 0].mean()),
+        "pitch_command_mean": float(selected[:, 1].mean()),
+        "rudder_command_mean": float(selected[:, 2].mean()),
+        "throttle_command_mean": float(selected[:, 3].mean()),
+    }
+    adjacent_valid = valid[1:] & valid[:-1]
+
+    if bool(adjacent_valid.any()):
+        delta = (actions[1:] - actions[:-1]).abs().mean(-1)
+        metrics["mean_delta_action"] = float(delta[adjacent_valid].mean())
+    else:
+        metrics["mean_delta_action"] = 0.0
+    return metrics
+
+
+def format_action_diagnostics(metrics):
+    if not metrics:
+        return ""
+
+    return (
+        f"act={metrics['action_abs_mean']:.3f} "
+        f"astd={metrics['action_std']:.3f} "
+        f"sat={metrics['action_saturation_rate']:.3f} "
+        f"dact={metrics['mean_delta_action']:.3f} "
+        f"cmd={metrics['roll_command_mean']:.2f}/{metrics['pitch_command_mean']:.2f}/"
+        f"{metrics['rudder_command_mean']:.2f}/{metrics['throttle_command_mean']:.2f}"
+    )
+
+
+def average_ppo_diagnostics(items):
+    if not items:
+        return {}
+
+    keys = set().union(*(item.keys() for item in items))
+
+    return {
+        key: float(torch.stack([item[key] for item in items if key in item]).mean().cpu())
+        for key in keys
+    }
+
+
 def stage_env_config(stage, profile):
     return {
         "observation_mode": "tactical16",
@@ -276,6 +330,7 @@ def ppo_update_mlp(
             )
             action_mean = output.logits[..., :4]
             ratio = (logp - flat_old_logp[idx]).exp()
+            log_ratio = logp - flat_old_logp[idx]
             policy_loss = -torch.minimum(
                 ratio * flat_adv[idx],
                 ratio.clamp(1 - cfg.clip, 1 + cfg.clip) * flat_adv[idx],
@@ -303,7 +358,24 @@ def ppo_update_mlp(
                 continue
 
             optimizer.step()
-            losses.append(loss.detach())
+            target_variance = flat_ret[idx].var(unbiased=False)
+            explained_variance = torch.where(
+                target_variance > 1e-8,
+                1.0 - (flat_ret[idx] - output.value).var(unbiased=False) / target_variance,
+                torch.zeros_like(target_variance),
+            )
+            losses.append(
+                {
+                    "loss": loss.detach(),
+                    "policy_loss": policy_loss.detach(),
+                    "value_loss": value_loss.detach(),
+                    "entropy": entropy.mean().detach(),
+                    "approx_kl": ((ratio - 1.0) - log_ratio).mean().detach(),
+                    "clip_fraction": ((ratio - 1.0).abs() > cfg.clip).float().mean().detach(),
+                    "explained_variance": explained_variance.detach(),
+                    "gradient_norm": grad_norm.detach(),
+                }
+            )
     return losses
 
 
@@ -356,6 +428,7 @@ def ppo_update_lstm(
 
             mb_adv = (mb_adv - mb_adv.mean()) / (mb_adv.std(unbiased=False) + 1e-8)
             ratio = (mb_logp - mb_old_logp).exp()
+            log_ratio = mb_logp - mb_old_logp
             policy_loss = -torch.minimum(
                 ratio * mb_adv,
                 ratio.clamp(1 - cfg.clip, 1 + cfg.clip) * mb_adv,
@@ -383,7 +456,24 @@ def ppo_update_lstm(
                 continue
 
             optimizer.step()
-            losses.append(loss.detach())
+            target_variance = mb_ret.var(unbiased=False)
+            explained_variance = torch.where(
+                target_variance > 1e-8,
+                1.0 - (mb_ret - mb_value).var(unbiased=False) / target_variance,
+                torch.zeros_like(target_variance),
+            )
+            losses.append(
+                {
+                    "loss": loss.detach(),
+                    "policy_loss": policy_loss.detach(),
+                    "value_loss": value_loss.detach(),
+                    "entropy": mb_entropy.mean().detach(),
+                    "approx_kl": ((ratio - 1.0) - log_ratio).mean().detach(),
+                    "clip_fraction": ((ratio - 1.0).abs() > cfg.clip).float().mean().detach(),
+                    "explained_variance": explained_variance.detach(),
+                    "gradient_norm": grad_norm.detach(),
+                }
+            )
     return losses
 
 
@@ -488,6 +578,7 @@ def main():
 
         for update in range(first_update, cfg.max_updates_per_stage + 1):
             obs_buf = []
+            action_buf = []
             raw_buf = []
             logp_buf = []
             value_buf = []
@@ -511,6 +602,7 @@ def main():
                 valid = info["valid"].bool()
 
                 obs_buf.append(obs_now)
+                action_buf.append(action)
                 raw_buf.append(raw)
                 logp_buf.append(logp)
                 value_buf.append(value)
@@ -525,6 +617,7 @@ def main():
                     break
 
             obs = torch.stack(obs_buf)
+            actions = torch.stack(action_buf)
             raw = torch.stack(raw_buf)
             old_logp = torch.stack(logp_buf)
             values = torch.stack(value_buf)
@@ -550,6 +643,8 @@ def main():
             returns = advantages + values
 
             valid_count = int(valids.sum().item())
+            action_metrics = action_diagnostics(actions, valids)
+            action_text = format_action_diagnostics(action_metrics)
             total_valid += valid_count
 
             min_valid_count = max(
@@ -596,7 +691,7 @@ def main():
                         loss_text="loss=nan",
                         rolling=rolling,
                         gate=gate,
-                        extra=f"skip=low_valid({valid_count}<{min_valid_count})",
+                        extra=(f"{action_text} skip=low_valid({valid_count}<{min_valid_count})"),
                     ),
                     flush=True,
                 )
@@ -614,6 +709,8 @@ def main():
                         "decision_limit": stage.decision_limit,
                         "reward_mean": reward_mean,
                         "loss": None,
+                        "ppo": {},
+                        "actions": action_metrics,
                         "episodes": rolling.get("episodes", 0.0),
                         "metrics": rolling,
                         "gate": gate,
@@ -718,7 +815,7 @@ def main():
                         loss_text="loss=nan",
                         rolling=rolling,
                         gate=gate,
-                        extra="skip=no_finite_minibatch",
+                        extra=f"{action_text} skip=no_finite_minibatch",
                     ),
                     flush=True,
                 )
@@ -735,6 +832,8 @@ def main():
                         "decision_limit": stage.decision_limit,
                         "reward_mean": reward_mean,
                         "loss": None,
+                        "ppo": {},
+                        "actions": action_metrics,
                         "episodes": rolling.get("episodes", 0.0),
                         "metrics": rolling,
                         "gate": gate,
@@ -744,7 +843,14 @@ def main():
                 state = model.initial_state(cfg.num_envs, device)
                 continue
 
-            loss_mean = torch.stack(losses).mean().item()
+            ppo_metrics = average_ppo_diagnostics(losses)
+            loss_mean = ppo_metrics["loss"]
+            loss_text = (
+                f"loss={loss_mean:.4f} pi={ppo_metrics['policy_loss']:.4f} "
+                f"vf={ppo_metrics['value_loss']:.4f} ent={ppo_metrics['entropy']:.3f} "
+                f"kl={ppo_metrics['approx_kl']:.4f} clipf={ppo_metrics['clip_fraction']:.3f} "
+                f"ev={ppo_metrics['explained_variance']:.3f} gn={ppo_metrics['gradient_norm']:.3f}"
+            )
 
             if update % max(1, int(cfg.log_interval)) == 0 or summary_added:
                 print(
@@ -755,9 +861,10 @@ def main():
                         decision=decision_max,
                         decision_limit=stage.decision_limit,
                         reward_mean=reward_mean,
-                        loss_text=f"loss={loss_mean:.4f}",
+                        loss_text=loss_text,
                         rolling=rolling,
                         gate=gate,
+                        extra=action_text,
                     ),
                     flush=True,
                 )
@@ -775,6 +882,8 @@ def main():
                     "decision_limit": stage.decision_limit,
                     "reward_mean": reward_mean,
                     "loss": loss_mean,
+                    "ppo": ppo_metrics,
+                    "actions": action_metrics,
                     "episodes": rolling.get("episodes", 0.0),
                     "metrics": rolling,
                     "gate": gate,
