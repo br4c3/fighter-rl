@@ -69,8 +69,8 @@ LSTM variant는 다음과 같다.
 
 | Variant | Observation | Recurrent 구조 |
 | --- | --- | --- |
-| `ppo_lstm` | 20차원: tactical 16 + previous action 4 | Encoder `128,128` -> LSTM `64` -> policy/value head |
-| `sac_lstm` | 20차원: tactical 16 + previous action 4 | Actor LSTM `64`, critic LSTM `64` |
+| `ppo_lstm` | 20차원: tactical 16(closure 포함) + previous action 4 | Encoder `128,128` -> LSTM `64` -> policy/value head |
+| `sac_lstm` | 20차원: tactical 16(closure 포함) + previous action 4 | Actor LSTM `64`, critic LSTM `64` |
 
 MLP variant인 `ppo_mlp`, `sac_mlp`는 4 frame stack을 써서 observation이 80차원이다.
 

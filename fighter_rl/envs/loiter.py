@@ -617,6 +617,7 @@ class CompetitionLoiterCurriculumEnv:
         self.ep_distance_valid = torch.zeros(self.n, dtype=torch.bool, device=self.device)
         self.ep_nonfinite_steps = torch.zeros(self.n, device=self.device)
         self.ep_wez_steps = torch.zeros(self.n, device=self.device)
+        self.ep_wez_entries = torch.zeros(self.n, device=self.device)
         self.wez_streak = torch.zeros(self.n, device=self.device)
         self.ep_wez_streak_max = torch.zeros(self.n, device=self.device)
         self.ep_inner_violation = torch.zeros(self.n, device=self.device)
@@ -627,16 +628,29 @@ class CompetitionLoiterCurriculumEnv:
         self.ep_track_score = torch.zeros(self.n, device=self.device)
         self.ep_overshoot = torch.zeros(self.n, device=self.device)
         self.ep_closure_violation = torch.zeros(self.n, device=self.device)
+        self.ep_abs_closing = torch.zeros(self.n, device=self.device)
+        self.ep_trail_error = torch.zeros(self.n, device=self.device)
+        self.ep_opening_away = torch.zeros(self.n, device=self.device)
         self.ep_min_own_alt = torch.full((self.n,), float("inf"), device=self.device)
         self.ep_min_target_alt = torch.full((self.n,), float("inf"), device=self.device)
         o, t = self.own.observation41(), self.target.observation41()
         _, distance0, ata0, aa0, _, _ = self._geometry(o, t)
         self.prev_distance = torch.nan_to_num(distance0, nan=5000.0, posinf=5000.0, neginf=5000.0)
+        self.last_closing = torch.nan_to_num(
+            self.init_closing_mps, nan=0.0, posinf=200.0, neginf=-200.0
+        ).clamp(-200.0, 200.0)
         self.prev_x_tgt = self._target_frame_x(o, t)
         self.prev_phi = self._gun_phi(
             self.prev_distance, torch.nan_to_num(ata0, nan=180.0), torch.nan_to_num(aa0, nan=180.0)
         )
         self.prev_policy_action = torch.zeros(self.n, 4, device=self.device)
+        wez = self.stage.wez
+        self.was_inside_wez = (
+            (float(wez["max_range_m"]) > float(wez["min_range_m"]))
+            & (self.prev_distance >= float(wez["min_range_m"]))
+            & (self.prev_distance <= float(wez["max_range_m"]))
+            & (torch.nan_to_num(ata0, nan=180.0).abs() <= float(wez["angle_deg"]) / 2)
+        )
         base = self._base_observation()
         frame = self._make_frame(base, torch.zeros(self.n, 4, device=self.device))
         # fmt: off
@@ -714,7 +728,10 @@ class CompetitionLoiterCurriculumEnv:
 
         # fmt: off
         x[:,14] = torch.where(inside, 1.0, -1.0)
-        x[:,15] = 2*(1 - ata.abs()/30).clamp(0, 1)*(1 - r/3000).clamp(0, 1) - 1
+        # Signed radial closure is the control variable used by the stage gate.
+        # Range and ATA are already present above, so this is more useful than
+        # the previous redundant range/aim quality product.
+        x[:,15] = (self.last_closing/100.0).clamp(-1, 1)
         # fmt: on
 
         return torch.nan_to_num(x.clamp(-1, 1), nan=0.0, posinf=1.0, neginf=-1.0)
@@ -1006,6 +1023,7 @@ class CompetitionLoiterCurriculumEnv:
                 inside, self.wez_streak + valid.float(), torch.zeros_like(self.wez_streak)
             )
             self.ep_wez_streak_max = torch.maximum(self.ep_wez_streak_max, self.wez_streak)
+            wez_entry = inside & (~self.was_inside_wez)
 
             dt = max(1e-6, float(self.stage.step_ratio) / float(self.hz))
             closing = (self.prev_distance - distance_s) / dt
@@ -1027,6 +1045,7 @@ class CompetitionLoiterCurriculumEnv:
                 *(self.wez_streak.clamp(0, cap)/cap)
                 *inside.float()
             )
+            reward += float(cfg.get("wez_entry_scale", 0.0))*wez_entry.float()
             reward += float(cfg.get("phi_scale", 0.0)) * (
                 float(cfg.get("phi_gamma", 0.99))*phi_now - self.prev_phi
             )
@@ -1120,8 +1139,25 @@ class CompetitionLoiterCurriculumEnv:
                 overshoot = distance_ok & (x_tgt > float(cfg.get("track_overshoot_x_m", -80.0)))
                 too_close = distance_ok & (distance_s < float(cfg.get("track_too_close_m", 260.0)))
 
+                range_error = distance_s - trail
+                previous_range_error = self.prev_distance - trail
+                progress_denominator = max(1.0, closure_limit * dt)
+                range_progress = (
+                    (previous_range_error.abs() - range_error.abs()) / progress_denominator
+                ).clamp(-1.0, 1.0)
+                response_s = max(0.25, float(cfg.get("track_closure_response_s", 2.5)))
+                desired_limit = max(1.0, float(cfg.get("track_desired_closure_limit_mps", 45.0)))
+                desired_closing = (range_error / response_s).clamp(-desired_limit, desired_limit)
+                closure_control_error = (closing - desired_closing) / closure_sigma
+                opening_away = distance_ok & (range_error > 0.0) & (closing < 0.0)
+
                 # fmt: off
                 reward += track_scale*track_score
+                reward += float(cfg.get("track_range_progress_scale", 0.0))*range_progress
+                reward -= float(cfg.get("track_closure_control_penalty", 0.0))*torch.square(
+                    closure_control_error.clamp(-3.0, 3.0)
+                )
+                reward -= float(cfg.get("track_opening_penalty", 0.0))*opening_away.float()
                 reward -= float(cfg.get("track_closure_penalty", 0.03))*torch.square(
                     (closing.abs() - closure_limit).clamp_min(0.0)/closure_sigma
                 )
@@ -1132,6 +1168,8 @@ class CompetitionLoiterCurriculumEnv:
                 track_score = torch.zeros(self.n, device=self.device)
                 closure_violation = torch.zeros(self.n, dtype=torch.bool, device=self.device)
                 overshoot = torch.zeros(self.n, dtype=torch.bool, device=self.device)
+                range_error = torch.zeros(self.n, device=self.device)
+                opening_away = torch.zeros(self.n, dtype=torch.bool, device=self.device)
         else:
             alignment = self._linear(ata_s, cfg.get("alignment_half_angle_deg", 90))
             approach = self._range(distance_s, cfg.get("approach_range_m", 10000))
@@ -1164,6 +1202,10 @@ class CompetitionLoiterCurriculumEnv:
             track_score = torch.zeros(self.n, device=self.device)
             closure_violation = torch.zeros_like(hard_collision)
             overshoot = torch.zeros_like(hard_collision)
+            range_error = torch.zeros(self.n, device=self.device)
+            opening_away = torch.zeros_like(hard_collision)
+            closing = torch.zeros(self.n, device=self.device)
+            wez_entry = torch.zeros_like(hard_collision)
             phi_now = getattr(self, "prev_phi", torch.zeros(self.n, device=self.device))
             x_tgt = getattr(self, "prev_x_tgt", torch.zeros(self.n, device=self.device))
         nonfinite = valid & (~finite_state | (~torch.isfinite(reward)))
@@ -1226,6 +1268,7 @@ class CompetitionLoiterCurriculumEnv:
             & (ata_s.abs() <= float(self.stage.wez["angle_deg"]) / 2)
         )
         self.ep_wez_steps += inside.float() * valid
+        self.ep_wez_entries += (wez_entry & valid).float()
         self.ep_inner_violation += (inner_violation & valid).float()
         self.ep_bad_3_9 += (bad_3_9 & valid).float()
         self.ep_red_wez += (red_inside & valid).float()
@@ -1234,6 +1277,11 @@ class CompetitionLoiterCurriculumEnv:
         self.ep_track_score += track_score * valid.float()
         self.ep_overshoot += (overshoot & valid).float()
         self.ep_closure_violation += (closure_violation & valid).float()
+        self.ep_abs_closing += closing.abs() * valid.float()
+        self.ep_trail_error += range_error.abs() * valid.float()
+        self.ep_opening_away += (opening_away & valid).float()
+        self.last_closing = torch.where(valid, closing, self.last_closing)
+        self.was_inside_wez = torch.where(valid, inside, self.was_inside_wez)
         self.prev_distance = torch.where(valid, distance_s, self.prev_distance)
         self.prev_x_tgt = torch.where(valid, x_tgt, self.prev_x_tgt)
         self.prev_phi = torch.where(valid, phi_now, self.prev_phi)
@@ -1253,6 +1301,9 @@ class CompetitionLoiterCurriculumEnv:
             )
             nonfinite_episode = self.ep_nonfinite_steps > 0
             episode_steps = self.steps.float().clamp_min(1.0)
+            violation_fraction = self.ep_closure_violation / episode_steps
+            violation_threshold = float(cfg.get("track_closure_violation_fraction", 0.05))
+            closure_violation_episode = violation_fraction > violation_threshold
             record = {
                 "episodes": count,
                 "win": float(win[m].float().sum()),
@@ -1266,6 +1317,7 @@ class CompetitionLoiterCurriculumEnv:
                 "nonfinite": float(nonfinite_episode[m].float().sum()),
                 "distance_valid": float(self.ep_distance_valid[m].float().sum()),
                 "ep_wez_steps": float(self.ep_wez_steps[m].sum()),
+                "wez_entries": float(self.ep_wez_entries[m].sum()),
                 "ep_wez_streak_max": float(self.ep_wez_streak_max[m].sum()),
                 "inner_violation": float((self.ep_inner_violation[m] > 0).float().sum()),
                 "bad_3_9": float((self.ep_bad_3_9[m] > 0).float().sum()),
@@ -1274,7 +1326,13 @@ class CompetitionLoiterCurriculumEnv:
                 "own_damage": float(self.ep_own_damage[m].sum()),
                 "track_score": float((self.ep_track_score[m] / episode_steps[m]).sum()),
                 "overshoot": float((self.ep_overshoot[m] > 0).float().sum()),
-                "closure_violation": float((self.ep_closure_violation[m] > 0).float().sum()),
+                "closure_violation": float(closure_violation_episode[m].float().sum()),
+                "closure_violation_step_fraction": float(violation_fraction[m].sum()),
+                "mean_abs_closing_mps": float((self.ep_abs_closing[m] / episode_steps[m]).sum()),
+                "trail_range_error_m": float((self.ep_trail_error[m] / episode_steps[m]).sum()),
+                "opening_away_step_fraction": float(
+                    (self.ep_opening_away[m] / episode_steps[m]).sum()
+                ),
                 "ep_min_distance": float(safe_ep_min_distance[m].sum()),
                 "ep_min_own_alt": float(self.ep_min_own_alt[m].sum()),
                 "ep_min_target_alt": float(self.ep_min_target_alt[m].sum()),
@@ -1320,13 +1378,18 @@ class CompetitionLoiterCurriculumEnv:
                         "nonfinite": float(nonfinite_episode[bm].float().sum()),
                         "distance_valid": float(self.ep_distance_valid[bm].float().sum()),
                         "ep_wez_steps": float(self.ep_wez_steps[bm].sum()),
+                        "wez_entries": float(self.ep_wez_entries[bm].sum()),
                         "ep_wez_streak_max": float(self.ep_wez_streak_max[bm].sum()),
                         "target_damage": float(self.ep_target_damage[bm].sum()),
                         "own_damage": float(self.ep_own_damage[bm].sum()),
                         "track_score": float((self.ep_track_score[bm] / bsteps).sum()),
                         "overshoot": float((self.ep_overshoot[bm] > 0).float().sum()),
-                        "closure_violation": float(
-                            (self.ep_closure_violation[bm] > 0).float().sum()
+                        "closure_violation": float(closure_violation_episode[bm].float().sum()),
+                        "closure_violation_step_fraction": float(violation_fraction[bm].sum()),
+                        "mean_abs_closing_mps": float((self.ep_abs_closing[bm] / bsteps).sum()),
+                        "trail_range_error_m": float((self.ep_trail_error[bm] / bsteps).sum()),
+                        "opening_away_step_fraction": float(
+                            (self.ep_opening_away[bm] / bsteps).sum()
                         ),
                         "inner_violation": float((self.ep_inner_violation[bm] > 0).float().sum()),
                         "bad_3_9": float((self.ep_bad_3_9[bm] > 0).float().sum()),
@@ -1472,6 +1535,10 @@ class CompetitionLoiterCurriculumEnv:
             "init_closing_mps",
             "init_time_to_wez_s",
             "own_damage",
+            "closure_violation_step_fraction",
+            "mean_abs_closing_mps",
+            "trail_range_error_m",
+            "opening_away_step_fraction",
         )
         bucket_positive = {metric: [] for metric in positive_metrics}
         bucket_rates = {metric: [] for metric in rate_metrics}

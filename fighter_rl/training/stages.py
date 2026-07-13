@@ -436,6 +436,7 @@ def _gun_reward(
         "damage_scale": float(damage_scale),
         "own_damage_scale": float(own_damage_scale),
         "dwell_scale": 0.03,
+        "wez_entry_scale": 0.08,
         "dwell_cap_steps": 20,
         "phi_scale": float(phi_scale),
         "phi_gamma": 0.99,
@@ -475,6 +476,12 @@ def _gun_reward(
         "track_closure_sigma_mps": float(track_closure_sigma_mps),
         "track_closure_limit_mps": float(track_closure_limit_mps),
         "track_closure_penalty": 0.060,
+        "track_range_progress_scale": 0.0,
+        "track_closure_control_penalty": 0.0,
+        "track_closure_response_s": 2.5,
+        "track_desired_closure_limit_mps": 45.0,
+        "track_opening_penalty": 0.0,
+        "track_closure_violation_fraction": 0.05,
         "track_overshoot_x_m": float(track_overshoot_x_m),
         "track_overshoot_penalty": 0.080,
         "track_too_close_m": float(track_too_close_m),
@@ -485,7 +492,15 @@ def _gun_reward(
     }
 
 
-def _track_reward(*, trail_m, scale=0.10, phi_scale=0.015, inner_soft_m=260.0):
+def _track_reward(
+    *,
+    trail_m,
+    scale=0.10,
+    phi_scale=0.015,
+    inner_soft_m=260.0,
+    range_progress_scale=0.050,
+    closure_control_penalty=0.025,
+):
     reward = _gun_reward(
         phi_scale=phi_scale,
         inner_soft_m=inner_soft_m,
@@ -510,6 +525,12 @@ def _track_reward(*, trail_m, scale=0.10, phi_scale=0.015, inner_soft_m=260.0):
     reward["aim_sigma_deg"] = 8.0
     reward["aim_range_center_m"] = float(trail_m)
     reward["aim_range_sigma_m"] = max(250.0, float(trail_m) * 0.45)
+    # Track position alone has a broad local optimum: the policy can collect a
+    # small positive reward while slowly opening from the target.  These terms
+    # give direction to the range error and teach a bounded closure command.
+    reward["track_range_progress_scale"] = float(range_progress_scale)
+    reward["track_closure_control_penalty"] = float(closure_control_penalty)
+    reward["track_opening_penalty"] = 0.020
 
     return reward
 
@@ -1567,7 +1588,12 @@ def _with_bucket_gun_curriculum():
             easy_fraction=0.55,
             boundary_fraction=0.04,
             reward_override=_track_reward(
-                trail_m=930.0, scale=0.115, phi_scale=0.008, inner_soft_m=288.0
+                trail_m=930.0,
+                scale=0.125,
+                phi_scale=0.010,
+                inner_soft_m=288.0,
+                range_progress_scale=0.075,
+                closure_control_penalty=0.035,
             ),
             bucket_mix=[
                 _bucket(

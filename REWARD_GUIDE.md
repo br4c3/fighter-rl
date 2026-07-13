@@ -29,9 +29,12 @@
 | Damage reward | `damage_scale` | 적에게 준 damage 보상 |
 | Own damage penalty | `own_damage_scale` | 내가 받은 damage 패널티 |
 | WEZ dwell | `dwell_scale` | WEZ 안에 연속으로 머무는 보상 |
+| WEZ entry | `wez_entry_scale` | WEZ에 새로 진입하거나 재진입할 때 주는 보상 |
 | Phi shaping | `phi_scale` | 거리/ATA/AA 기반 gun quality 개선량 보상 |
 | Aim shaping | `aim_scale` | 조준 각도와 목표 거리 근접도 보상 |
 | Track reward | `track_scale` | 목표 trail 위치를 따라가는 보상 |
+| Range progress | `track_range_progress_scale` | 목표 trail 거리 오차를 줄이는 방향성 보상 |
+| Closure control | `track_closure_control_penalty` | 거리 오차에 맞는 목표 closure에서 벗어나는 패널티 |
 | Inner penalty | `inner_penalty_scale` | 너무 가까운 거리 진입 패널티 |
 | Red WEZ penalty | `red_wez_penalty` | 적의 WEZ 안에 들어간 패널티 |
 | Bad 3-9 penalty | `bad_3_9_penalty` | 좋지 않은 3-9 line crossing 패널티 |
@@ -70,6 +73,7 @@ Stage 9부터는 `aim_scale=0`인 기본 gun reward만 사용한다.
 | `damage_scale` | `12.0` |
 | `own_damage_scale` | `18.0` |
 | `dwell_scale` | `0.03` |
+| `wez_entry_scale` | `0.08` |
 | `inner_penalty_scale` | `0.65` |
 | `red_wez_penalty` | `0.08` |
 | `low_altitude_penalty` | `2.0` |
@@ -94,3 +98,8 @@ Stage 9부터는 `aim_scale=0`인 기본 gun reward만 사용한다.
 보상 항목을 새로 추가하려면 `loiter.py`에서 `reward += ...` 또는
 `reward -= ...` 계산을 추가하고, episode summary에 필요한 metric을
 같이 기록한다.
+
+`closure_violation_rate`는 순간적인 한 번의 초과가 아니라, 한 에피소드에서
+`abs(closing)`이 제한을 넘은 step 비율이 `track_closure_violation_fraction`
+(기본 5%)을 초과한 에피소드의 비율이다. 진단할 때는 `clstep`, `|cl|`,
+`rerr`, `open` 로그를 함께 본다.

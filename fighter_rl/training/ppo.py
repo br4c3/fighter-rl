@@ -93,6 +93,10 @@ def format_safety_metrics(rolling):
             "track_score",
             "overshoot_rate",
             "closure_violation_rate",
+            "closure_violation_step_fraction",
+            "mean_abs_closing_mps",
+            "trail_range_error_m",
+            "opening_away_step_fraction",
         )
     ):
         return ""
@@ -109,7 +113,11 @@ def format_safety_metrics(rolling):
         f"twez={rolling.get('init_time_to_wez_s', 0):.1f} "
         f"trk={rolling.get('track_score', 0):.3f} "
         f"ovr={rolling.get('overshoot_rate', 0):.3f} "
-        f"clv={rolling.get('closure_violation_rate', 0):.3f}"
+        f"clv={rolling.get('closure_violation_rate', 0):.3f} "
+        f"clstep={rolling.get('closure_violation_step_fraction', 0):.3f} "
+        f"|cl|={rolling.get('mean_abs_closing_mps', 0):.1f} "
+        f"rerr={rolling.get('trail_range_error_m', 0):.1f} "
+        f"open={rolling.get('opening_away_step_fraction', 0):.3f}"
     )
 
 
