@@ -1,4 +1,5 @@
 import json
+import math
 import random
 import time
 from collections import deque
@@ -15,8 +16,11 @@ from fighter_rl.models.sac import (
     soft_update,
 )
 from fighter_rl.training.ppo import (
+    action_diagnostics,
     average_window,
+    deterministic_curriculum_evaluation,
     format_gate,
+    format_action_diagnostics,
     format_training_line,
     stage_env_config,
 )
@@ -105,6 +109,14 @@ class SequenceReplay:
         return {key: torch.cat(parts, dim=1) for key, parts in out.items()}
 
 
+def reset_learned_parameters(module):
+    def reset(child):
+        if hasattr(child, "reset_parameters"):
+            child.reset_parameters()
+
+    module.apply(reset)
+
+
 def save_checkpoint(
     path,
     *,
@@ -183,6 +195,8 @@ def sac_updates(
     replay,
     cfg,
     device,
+    *,
+    update_actor=True,
 ):
     losses = []
 
@@ -229,6 +243,18 @@ def sac_updates(
 
         critic_opt.step()
 
+        if not update_actor:
+            soft_update(target_q1, q1, cfg.tau)
+            soft_update(target_q2, q2, cfg.tau)
+            losses.append(
+                {
+                    "q": float(q_loss.detach().cpu()),
+                    "actor": float("nan"),
+                    "alpha": float(log_alpha.exp().detach().cpu()),
+                }
+            )
+            continue
+
         new_action, logp, _, actor_logits = actor.sample_sequence(obs, return_logits=True)
         q_pi = torch.minimum(
             q1.forward_sequence(obs, new_action), q2.forward_sequence(obs, new_action)
@@ -268,6 +294,9 @@ def sac_updates(
             continue
 
         alpha_opt.step()
+        with torch.no_grad():
+            alpha_min = max(1e-6, float(getattr(cfg, "alpha_min", 0.05)))
+            log_alpha.clamp_(min=math.log(alpha_min))
 
         soft_update(target_actor, actor, cfg.tau)
         soft_update(target_q1, q1, cfg.tau)
@@ -284,6 +313,11 @@ def sac_updates(
 
 def main():
     cfg = load_training_config("configs/sac_lstm.json")
+    cfg.reset_critic_stages = list(getattr(cfg, "reset_critic_stages", []))
+    cfg.reset_alpha_stages = list(getattr(cfg, "reset_alpha_stages", []))
+    cfg.stage_alpha = float(getattr(cfg, "stage_alpha", 0.20))
+    cfg.alpha_min = float(getattr(cfg, "alpha_min", 0.05))
+    cfg.critic_warmup_updates_on_reset = int(getattr(cfg, "critic_warmup_updates_on_reset", 0))
     profile = get_sac_profile(cfg.variant)
 
     if cfg.horizon <= 0:
@@ -310,13 +344,14 @@ def main():
     target_actor.load_state_dict(actor.state_dict())
     target_q1.load_state_dict(q1.state_dict())
     target_q2.load_state_dict(q2.state_dict())
-    log_alpha = torch.zeros((), device=device, requires_grad=True)
+    log_alpha = torch.tensor(math.log(float(cfg.stage_alpha)), device=device, requires_grad=True)
     actor_opt = torch.optim.Adam(actor.parameters(), lr=cfg.actor_lr)
     critic_opt = torch.optim.Adam(list(q1.parameters()) + list(q2.parameters()), lr=cfg.critic_lr)
     alpha_opt = torch.optim.Adam([log_alpha], lr=cfg.alpha_lr)
 
     start_stage = cfg.start_stage
     resume_update = 0
+    resume_stage_name = None
     total_valid = 0
 
     if cfg.resume:
@@ -325,8 +360,9 @@ def main():
 
         if cfg.reset_alpha_on_resume:
             with torch.no_grad():
-                log_alpha.zero_()
+                log_alpha.fill_(math.log(float(cfg.stage_alpha)))
         saved_stage = int(payload.get("stage_index", start_stage))
+        resume_stage_name = payload.get("stage_name")
 
         if not cfg.resume_weights_only:
             if cfg.start_stage == 0:
@@ -356,9 +392,36 @@ def main():
 
     for stage_index in range(start_stage, cfg.stop_stage + 1):
         stage = stages[stage_index]
+        reward_regime_changed = stage_index != start_stage or (
+            stage_index == start_stage
+            and resume_stage_name is not None
+            and resume_stage_name != stage.name
+        )
 
         if cfg.reset_replay_on_stage and stage_index != start_stage:
             replay = SequenceReplay(cfg.replay_chunks, seq_len=cfg.horizon)
+
+        reset_critic = reward_regime_changed and stage_index in set(cfg.reset_critic_stages)
+        reset_alpha = reward_regime_changed and stage_index in set(cfg.reset_alpha_stages)
+
+        if reset_critic:
+            reset_learned_parameters(q1)
+            reset_learned_parameters(q2)
+            target_q1.load_state_dict(q1.state_dict())
+            target_q2.load_state_dict(q2.state_dict())
+            critic_opt = torch.optim.Adam(
+                list(q1.parameters()) + list(q2.parameters()), lr=cfg.critic_lr
+            )
+            print(f"[stage-reset] stage={stage_index} critic", flush=True)
+
+        if reset_alpha:
+            with torch.no_grad():
+                log_alpha.fill_(math.log(float(cfg.stage_alpha)))
+            alpha_opt = torch.optim.Adam([log_alpha], lr=cfg.alpha_lr)
+            print(
+                f"[stage-reset] stage={stage_index} alpha={float(cfg.stage_alpha):.3f}",
+                flush=True,
+            )
 
         stage_dir = run / f"stage_{stage_index:02d}_{stage.name}"
         stage_dir.mkdir(parents=True, exist_ok=True)
@@ -383,6 +446,9 @@ def main():
         window = deque(maxlen=cfg.advance_window)
 
         first_update = resume_update + 1 if stage_index == start_stage else 1
+        critic_warmup_until = (
+            first_update + int(cfg.critic_warmup_updates_on_reset) if reset_critic else first_update
+        )
         advanced = False
         pass_streak = 0
 
@@ -401,10 +467,14 @@ def main():
             next_obs_buf = []
             done_buf = []
             valid_buf = []
+            logp_buf = []
+            logits_buf = []
 
             for _ in range(cfg.horizon):
                 with torch.no_grad():
-                    action, _, next_state = actor.sample_step(obs_now, state)
+                    action, logp, next_state, actor_logits = actor.sample_step(
+                        obs_now, state, return_logits=True
+                    )
 
                 next_obs, reward, done, info = env.step(action)
                 valid = info["valid"].bool()
@@ -415,6 +485,8 @@ def main():
                 next_obs_buf.append(next_obs)
                 done_buf.append((done | ~valid).float())
                 valid_buf.append(valid)
+                logp_buf.append(logp)
+                logits_buf.append(actor_logits)
 
                 state = actor.mask_state(actor.detach_state(next_state), info["active"].bool())
                 obs_now = next_obs
@@ -428,8 +500,19 @@ def main():
             next_obs = torch.stack(next_obs_buf)
             done = torch.stack(done_buf)
             valid = torch.stack(valid_buf).bool()
+            rollout_logp = torch.stack(logp_buf)
+            rollout_logits = torch.stack(logits_buf)
 
             valid_count = int(valid.sum().item())
+            action_metrics = action_diagnostics(action, valid)
+            if valid_count:
+                action_metrics["policy_entropy_proxy"] = float(
+                    -rollout_logp[valid].mean().detach().cpu()
+                )
+                action_metrics["policy_log_std_mean"] = float(
+                    rollout_logits[..., 4:][valid].mean().detach().cpu()
+                )
+            action_text = format_action_diagnostics(action_metrics)
             total_valid += valid_count
 
             min_valid_count = max(2, int(valid.numel() * max(0.0, float(cfg.min_valid_fraction))))
@@ -470,6 +553,7 @@ def main():
                     replay,
                     cfg,
                     device,
+                    update_actor=update >= critic_warmup_until,
                 )
 
             rolling = average_window(window)
@@ -488,8 +572,10 @@ def main():
                 display_streak,
                 cfg.advance_patience,
             )
-            q_loss = sum(x["q"] for x in losses) / len(losses) if losses else float("nan")
-            actor_loss = sum(x["actor"] for x in losses) / len(losses) if losses else float("nan")
+            q_values = [x["q"] for x in losses if math.isfinite(x["q"])]
+            actor_values = [x["actor"] for x in losses if math.isfinite(x["actor"])]
+            q_loss = sum(q_values) / len(q_values) if q_values else float("nan")
+            actor_loss = sum(actor_values) / len(actor_values) if actor_values else float("nan")
             alpha = float(log_alpha.exp().detach().cpu())
             reward_mean = reward[valid].mean().item() if valid_count else float("nan")
             decision_max = int(env.steps.max().item())
@@ -508,7 +594,10 @@ def main():
                         loss_text=f"q={q_loss:.4f} pi={actor_loss:.4f} alpha={alpha:.3f}",
                         rolling=rolling,
                         gate=gate,
-                        extra=f"replay={replay.valid_transitions}/{replay.transitions}{skip_text}",
+                        extra=(
+                            f"{action_text} replay={replay.valid_transitions}/"
+                            f"{replay.transitions}{skip_text}"
+                        ),
                     ),
                     flush=True,
                 )
@@ -531,6 +620,7 @@ def main():
                     "q_loss": q_loss,
                     "actor_loss": actor_loss,
                     "alpha": alpha,
+                    "actions": action_metrics,
                     "episodes": rolling.get("episodes", 0.0),
                     "metrics": rolling,
                     "gate": gate,
@@ -549,6 +639,14 @@ def main():
                     pass_streak = pass_streak + 1 if ok else 0
 
                     if ok and pass_streak >= max(1, cfg.advance_patience):
+                        eval_metrics = deterministic_curriculum_evaluation(
+                            actor, stage, profile, cfg, device, sac=True
+                        )
+                        eval_ok, eval_reason = advancement_satisfied(stage, eval_metrics)
+                        if not eval_ok:
+                            pass_streak = 0
+                            print(f"[eval-block] stage={stage_index} {eval_reason}", flush=True)
+                            continue
                         advanced = True
                         save_checkpoint(
                             stage_dir / "final_checkpoint.pt",
@@ -571,8 +669,9 @@ def main():
                                 "name": stage.name,
                                 "update": update,
                                 "status": "advanced",
-                                "reason": reason,
+                                "reason": f"train:{reason}; eval:{eval_reason}",
                                 "metrics": rolling,
+                                "evaluation_metrics": eval_metrics,
                             }
                         )
                         (run / "curriculum_state.json").write_text(
@@ -612,6 +711,14 @@ def main():
                     if pass_streak < max(1, cfg.advance_patience):
                         continue
 
+                    eval_metrics = deterministic_curriculum_evaluation(
+                        actor, stage, profile, cfg, device, sac=True
+                    )
+                    eval_ok, eval_reason = advancement_satisfied(stage, eval_metrics)
+                    if not eval_ok:
+                        pass_streak = 0
+                        print(f"[eval-block] stage={stage_index} {eval_reason}", flush=True)
+                        continue
                     advanced = True
                     save_checkpoint(
                         stage_dir / "final_checkpoint.pt",
@@ -634,8 +741,9 @@ def main():
                             "name": stage.name,
                             "update": update,
                             "status": "advanced",
-                            "reason": reason,
+                            "reason": f"train:{reason}; eval:{eval_reason}",
                             "metrics": rolling,
+                            "evaluation_metrics": eval_metrics,
                         }
                     )
                     (run / "curriculum_state.json").write_text(

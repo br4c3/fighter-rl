@@ -631,6 +631,27 @@ class CompetitionLoiterCurriculumEnv:
         self.ep_abs_closing = torch.zeros(self.n, device=self.device)
         self.ep_trail_error = torch.zeros(self.n, device=self.device)
         self.ep_opening_away = torch.zeros(self.n, device=self.device)
+        self.ep_tail_steps = torch.zeros(self.n, device=self.device)
+        self.ep_tail_track_score = torch.zeros(self.n, device=self.device)
+        self.ep_tail_reward = torch.zeros(self.n, device=self.device)
+        self.ep_tail_ata = torch.zeros(self.n, device=self.device)
+        self.ep_tail_range_error = torch.zeros(self.n, device=self.device)
+        self.ep_tail_wez = torch.zeros(self.n, device=self.device)
+        self.ep_reward_components = {
+            name: torch.zeros(self.n, device=self.device)
+            for name in (
+                "reward_damage",
+                "reward_dwell",
+                "reward_wez_entry",
+                "reward_phi",
+                "reward_aim",
+                "reward_track",
+                "reward_range_progress",
+                "penalty_closure_control",
+                "penalty_closure_limit",
+                "penalty_action_rate",
+            )
+        }
         self.ep_min_own_alt = torch.full((self.n,), float("inf"), device=self.device)
         self.ep_min_target_alt = torch.full((self.n,), float("inf"), device=self.device)
         o, t = self.own.observation41(), self.target.observation41()
@@ -969,6 +990,9 @@ class CompetitionLoiterCurriculumEnv:
         _, _, target_ata, _, _, _ = self._geometry(t, o)
 
         cfg = self.stage.reward
+        component = {
+            name: torch.zeros(self.n, device=self.device) for name in self.ep_reward_components
+        }
 
         finite_state = (
             torch.isfinite(o).all(1)
@@ -1036,19 +1060,27 @@ class CompetitionLoiterCurriculumEnv:
             )
 
             # fmt: off
-            reward += float(cfg.get("damage_scale", 12.0))*total_target_damage
-            reward -= float(cfg.get("own_damage_scale", 18.0))*total_own_damage
+            component["reward_damage"] = (
+                float(cfg.get("damage_scale", 12.0))*total_target_damage
+                - float(cfg.get("own_damage_scale", 18.0))*total_own_damage
+            )
+            reward += component["reward_damage"]
 
             cap = max(1.0, float(cfg.get("dwell_cap_steps", 20.0)))
-            reward += (
+            component["reward_dwell"] = (
                 float(cfg.get("dwell_scale", 0.03))
                 *(self.wez_streak.clamp(0, cap)/cap)
                 *inside.float()
             )
-            reward += float(cfg.get("wez_entry_scale", 0.0))*wez_entry.float()
-            reward += float(cfg.get("phi_scale", 0.0)) * (
+            component["reward_wez_entry"] = (
+                float(cfg.get("wez_entry_scale", 0.0))*wez_entry.float()
+            )
+            component["reward_phi"] = float(cfg.get("phi_scale", 0.0)) * (
                 float(cfg.get("phi_gamma", 0.99))*phi_now - self.prev_phi
             )
+            reward += component["reward_dwell"]
+            reward += component["reward_wez_entry"]
+            reward += component["reward_phi"]
             # fmt: on
 
             aim_scale = float(cfg.get("aim_scale", 0.0))
@@ -1066,7 +1098,8 @@ class CompetitionLoiterCurriculumEnv:
                     -torch.square(ata_s.abs()/aim_sigma)
                     - torch.square((distance_s - aim_range_center)/aim_range_sigma)
                 )
-                reward += aim_scale*aim_score*distance_ok.float()
+                component["reward_aim"] = aim_scale*aim_score*distance_ok.float()
+                reward += component["reward_aim"]
                 # fmt: on
 
             inner_soft = float(cfg.get("inner_soft_m", 300.0))
@@ -1104,9 +1137,12 @@ class CompetitionLoiterCurriculumEnv:
             reward -= float(cfg.get("low_altitude_penalty", 2.0))*(
                 (own_alt_s < float(cfg.get("low_altitude_m", 1000.0))).float()
             )
-            reward -= float(cfg.get("action_rate_penalty", 0.001))*(
+            component["penalty_action_rate"] = -float(
+                cfg.get("action_rate_penalty", 0.001)
+            )*(
                 a - self.prev_policy_action
             ).square().sum(1)
+            reward += component["penalty_action_rate"]
 
             reward += float(cfg.get("altitude_margin_scale", 0))*self._altitude_margin(
                 own_alt_s, cfg.get("altitude_floor_m", 1800), cfg.get("altitude_nominal_m", 7000)
@@ -1152,15 +1188,35 @@ class CompetitionLoiterCurriculumEnv:
                 opening_away = distance_ok & (range_error > 0.0) & (closing < 0.0)
 
                 # fmt: off
-                reward += track_scale*track_score
-                reward += float(cfg.get("track_range_progress_scale", 0.0))*range_progress
-                reward -= float(cfg.get("track_closure_control_penalty", 0.0))*torch.square(
-                    closure_control_error.clamp(-3.0, 3.0)
+                component["reward_track"] = track_scale*track_score
+                component["reward_range_progress"] = (
+                    float(cfg.get("track_range_progress_scale", 0.0))*range_progress
                 )
-                reward -= float(cfg.get("track_opening_penalty", 0.0))*opening_away.float()
-                reward -= float(cfg.get("track_closure_penalty", 0.03))*torch.square(
+                bounded_control_error = closure_control_error.abs().clamp_max(3.0)
+                control_huber = torch.where(
+                    bounded_control_error < 1.0,
+                    0.5*bounded_control_error.square(),
+                    bounded_control_error - 0.5,
+                )*2.0
+                component["penalty_closure_control"] = -float(
+                    cfg.get("track_closure_control_penalty", 0.0)
+                )*control_huber
+                closure_excess = (
                     (closing.abs() - closure_limit).clamp_min(0.0)/closure_sigma
-                )
+                ).clamp_max(3.0)
+                closure_huber = torch.where(
+                    closure_excess < 1.0,
+                    0.5*closure_excess.square(),
+                    closure_excess - 0.5,
+                )*2.0
+                component["penalty_closure_limit"] = -float(
+                    cfg.get("track_closure_penalty", 0.03)
+                )*closure_huber
+                reward += component["reward_track"]
+                reward += component["reward_range_progress"]
+                reward += component["penalty_closure_control"]
+                reward -= float(cfg.get("track_opening_penalty", 0.0))*opening_away.float()
+                reward += component["penalty_closure_limit"]
                 reward -= float(cfg.get("track_overshoot_penalty", 0.08))*overshoot.float()
                 reward -= float(cfg.get("track_too_close_penalty", 0.20))*too_close.float()
                 # fmt: on
@@ -1280,6 +1336,18 @@ class CompetitionLoiterCurriculumEnv:
         self.ep_abs_closing += closing.abs() * valid.float()
         self.ep_trail_error += range_error.abs() * valid.float()
         self.ep_opening_away += (opening_away & valid).float()
+        tail_start = float(self.stage.decision_limit) * (
+            1.0 - float(cfg.get("tail_fraction", 0.25))
+        )
+        tail = valid & (self.steps.float() > tail_start)
+        self.ep_tail_steps += tail.float()
+        self.ep_tail_track_score += track_score * tail.float()
+        self.ep_tail_reward += reward * tail.float()
+        self.ep_tail_ata += ata_s.abs() * tail.float()
+        self.ep_tail_range_error += range_error.abs() * tail.float()
+        self.ep_tail_wez += inside.float() * tail.float()
+        for name, value in component.items():
+            self.ep_reward_components[name] += value * valid.float()
         self.last_closing = torch.where(valid, closing, self.last_closing)
         self.was_inside_wez = torch.where(valid, inside, self.was_inside_wez)
         self.prev_distance = torch.where(valid, distance_s, self.prev_distance)
@@ -1301,6 +1369,7 @@ class CompetitionLoiterCurriculumEnv:
             )
             nonfinite_episode = self.ep_nonfinite_steps > 0
             episode_steps = self.steps.float().clamp_min(1.0)
+            tail_steps = self.ep_tail_steps.clamp_min(1.0)
             violation_fraction = self.ep_closure_violation / episode_steps
             violation_threshold = float(cfg.get("track_closure_violation_fraction", 0.05))
             closure_violation_episode = violation_fraction > violation_threshold
@@ -1333,6 +1402,11 @@ class CompetitionLoiterCurriculumEnv:
                 "opening_away_step_fraction": float(
                     (self.ep_opening_away[m] / episode_steps[m]).sum()
                 ),
+                "tail_track_score": float((self.ep_tail_track_score[m] / tail_steps[m]).sum()),
+                "tail_reward": float((self.ep_tail_reward[m] / tail_steps[m]).sum()),
+                "tail_ata_deg": float((self.ep_tail_ata[m] / tail_steps[m]).sum()),
+                "tail_range_error_m": float((self.ep_tail_range_error[m] / tail_steps[m]).sum()),
+                "tail_wez_fraction": float((self.ep_tail_wez[m] / tail_steps[m]).sum()),
                 "ep_min_distance": float(safe_ep_min_distance[m].sum()),
                 "ep_min_own_alt": float(self.ep_min_own_alt[m].sum()),
                 "ep_min_target_alt": float(self.ep_min_target_alt[m].sum()),
@@ -1347,6 +1421,8 @@ class CompetitionLoiterCurriculumEnv:
                 "initial_opening": float(self.init_opening[m].float().sum()),
                 "return": float(self.ep_return[m].sum()),
             }
+            for name, value in self.ep_reward_components.items():
+                record[name] = float((value[m] / episode_steps[m]).sum())
             bucket_metrics = {}
             bucket_ids = getattr(self, "init_bucket_id", None)
             bucket_names = getattr(self, "bucket_names", ["default"])
@@ -1360,6 +1436,7 @@ class CompetitionLoiterCurriculumEnv:
                         continue
 
                     bsteps = episode_steps[bm]
+                    btail_steps = tail_steps[bm]
                     bsafe_distance = torch.where(
                         self.ep_distance_valid,
                         self.ep_min_distance,
@@ -1391,6 +1468,15 @@ class CompetitionLoiterCurriculumEnv:
                         "opening_away_step_fraction": float(
                             (self.ep_opening_away[bm] / bsteps).sum()
                         ),
+                        "tail_track_score": float(
+                            (self.ep_tail_track_score[bm] / btail_steps).sum()
+                        ),
+                        "tail_reward": float((self.ep_tail_reward[bm] / btail_steps).sum()),
+                        "tail_ata_deg": float((self.ep_tail_ata[bm] / btail_steps).sum()),
+                        "tail_range_error_m": float(
+                            (self.ep_tail_range_error[bm] / btail_steps).sum()
+                        ),
+                        "tail_wez_fraction": float((self.ep_tail_wez[bm] / btail_steps).sum()),
                         "inner_violation": float((self.ep_inner_violation[bm] > 0).float().sum()),
                         "bad_3_9": float((self.ep_bad_3_9[bm] > 0).float().sum()),
                         "red_wez": float((self.ep_red_wez[bm] > 0).float().sum()),
@@ -1406,6 +1492,8 @@ class CompetitionLoiterCurriculumEnv:
                         "initial_opening": float(self.init_opening[bm].float().sum()),
                         "return": float(self.ep_return[bm].sum()),
                     }
+                    for component_name, value in self.ep_reward_components.items():
+                        bucket_metrics[name][component_name] = float((value[bm] / bsteps).sum())
             if bucket_metrics:
                 record["bucket_metrics"] = bucket_metrics
             self.completed.append(record)
@@ -1539,6 +1627,21 @@ class CompetitionLoiterCurriculumEnv:
             "mean_abs_closing_mps",
             "trail_range_error_m",
             "opening_away_step_fraction",
+            "tail_track_score",
+            "tail_reward",
+            "tail_ata_deg",
+            "tail_range_error_m",
+            "tail_wez_fraction",
+            "reward_damage",
+            "reward_dwell",
+            "reward_wez_entry",
+            "reward_phi",
+            "reward_aim",
+            "reward_track",
+            "reward_range_progress",
+            "penalty_closure_control",
+            "penalty_closure_limit",
+            "penalty_action_rate",
         )
         bucket_positive = {metric: [] for metric in positive_metrics}
         bucket_rates = {metric: [] for metric in rate_metrics}

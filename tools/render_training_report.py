@@ -43,10 +43,16 @@ DASHBOARD_FIELDS = {
     "action_std",
     "action_saturation_rate",
     "mean_delta_action",
+    "roll_delta_action",
+    "pitch_delta_action",
+    "rudder_delta_action",
+    "throttle_delta_action",
     "roll_command_mean",
     "pitch_command_mean",
     "rudder_command_mean",
     "throttle_command_mean",
+    "policy_entropy_proxy",
+    "policy_log_std_mean",
     "win_rate",
     "timeout_rate",
     "crash_rate",
@@ -71,6 +77,21 @@ DASHBOARD_FIELDS = {
     "overshoot_rate",
     "nonfinite_rate",
     "init_feasible_rate",
+    "tail_track_score",
+    "tail_reward",
+    "tail_ata_deg",
+    "tail_range_error_m",
+    "tail_wez_fraction",
+    "reward_damage",
+    "reward_dwell",
+    "reward_wez_entry",
+    "reward_phi",
+    "reward_aim",
+    "reward_track",
+    "reward_range_progress",
+    "penalty_closure_control",
+    "penalty_closure_limit",
+    "penalty_action_rate",
 }
 
 
@@ -326,6 +347,8 @@ HTML_TEMPLATE = r"""<!doctype html>
   <section class="grid">
     <article class="panel span2"><h2>Curriculum progress</h2><div id="stageTable"></div></article>
     <article class="panel"><h2>Reward</h2><div id="rewardLegend" class="legend"></div><svg id="rewardChart" class="chart"></svg></article>
+    <article class="panel"><h2>Reward components (per step)</h2><div id="componentLegend" class="legend"></div><svg id="componentChart" class="chart"></svg></article>
+    <article class="panel"><h2>Late-episode stability (last 25%)</h2><div id="tailLegend" class="legend"></div><svg id="tailChart" class="chart"></svg></article>
     <article class="panel"><h2>Tracking & closure</h2><div id="trackLegend" class="legend"></div><svg id="trackChart" class="chart"></svg></article>
     <article class="panel"><h2>Angles</h2><div id="geometryLegend" class="legend"></div><svg id="geometryChart" class="chart"></svg></article>
     <article class="panel"><h2>Range control</h2><div id="rangeLegend" class="legend"></div><svg id="rangeChart" class="chart"></svg></article>
@@ -354,7 +377,7 @@ function renderStages(){let rows=DATA.stages.map(stage=>{const rs=byStage.get(Nu
 function renderLegend(id,series){document.getElementById(id).innerHTML=series.map((s,i)=>`<span class="key"><i class="dot" style="background:${s.color||COLORS[i]}"></i>${esc(s.label)}</span>`).join('')}
 function chart(svgId,legendId,records,series,{min=null,max=null}={}){const svg=document.getElementById(svgId);renderLegend(legendId,series);const W=720,H=245,p={l:48,r:16,t:12,b:27};svg.setAttribute('viewBox',`0 0 ${W} ${H}`);const values=[];series.forEach(s=>records.forEach(r=>{const v=Number(r[s.key]);if(Number.isFinite(v))values.push(v)}));if(!values.length){svg.innerHTML='<text x="360" y="125" text-anchor="middle">No data for this metric</text>';return}let lo=min??Math.min(...values),hi=max??Math.max(...values);if(lo===hi){lo-=1;hi+=1}const pad=(hi-lo)*.08; if(min==null)lo-=pad;if(max==null)hi+=pad;const x=i=>p.l+(records.length<=1?0:i/(records.length-1))*(W-p.l-p.r),y=v=>p.t+(hi-v)/(hi-lo)*(H-p.t-p.b);let out='';for(let i=0;i<5;i++){const yy=p.t+i*(H-p.t-p.b)/4,v=hi-i*(hi-lo)/4;out+=`<line class="gridline" x1="${p.l}" y1="${yy}" x2="${W-p.r}" y2="${yy}"/><text x="${p.l-7}" y="${yy+3}" text-anchor="end">${fmt(v,2)}</text>`}out+=`<line class="axis" x1="${p.l}" y1="${H-p.b}" x2="${W-p.r}" y2="${H-p.b}"/>`;series.forEach((s,si)=>{let segments=[],current=[];records.forEach((r,i)=>{const v=Number(r[s.key]);if(Number.isFinite(v))current.push(`${x(i).toFixed(1)},${y(v).toFixed(1)}`);else if(current.length){segments.push(current);current=[]}});if(current.length)segments.push(current);segments.forEach(points=>{out+=`<polyline fill="none" stroke="${s.color||COLORS[si]}" stroke-width="2" stroke-linejoin="round" points="${points.join(' ')}"/>`})});out+=`<text x="${p.l}" y="${H-7}">${records.length?`stage ${records[0].stage} / update ${records[0].update}`:''}</text><text x="${W-p.r}" y="${H-7}" text-anchor="end">${records.length?`stage ${latest(records).stage} / update ${latest(records).update}`:''}</text>`;svg.innerHTML=out;}
 function renderDiagnosis(records){const last=latest(records),gate=String(last.gate||'No completed gate window yet'),parts=gate.replace(/^(pass|block):/,'').split(',').filter(Boolean),klass=gate.startsWith('pass:')?'ok':'bad';document.getElementById('diagnosis').innerHTML=`<p class="${klass}"><b>${gate.startsWith('pass:')?'Gate passed':'Gate blocked'}</b></p>`+(parts.length?`<ul>${parts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:`<p class="muted">${esc(gate)}</p>`)+`<table><tbody><tr><td>explained variance</td><td>${fmt(last.explained_variance)}</td></tr><tr><td>entropy</td><td>${fmt(last.entropy)}</td></tr><tr><td>approx KL / clip fraction</td><td>${fmt(last.approx_kl)} / ${fmt(last.clip_fraction)}</td></tr><tr><td>action saturation / delta</td><td>${fmt(last.action_saturation_rate)} / ${fmt(last.mean_delta_action)}</td></tr></tbody></table><p class="muted">open=${fmt(last.opening_away_step_fraction)} is the fraction of steps moving away outside trail range; it is not action magnitude.</p>`;}
-function render(){const r=selectedRecords();renderCards(r);chart('rewardChart','rewardLegend',r,[{key:'reward_mean',label:'reward'}]);chart('trackChart','trackLegend',r,[{key:'track_score',label:'track score'},{key:'closure_violation_rate',label:'closure violation'},{key:'opening_away_step_fraction',label:'opening away'}],{min:0,max:1});chart('geometryChart','geometryLegend',r,[{key:'final_ata_deg',label:'ATA deg'},{key:'final_aa_deg',label:'AA deg'}],{min:0});chart('rangeChart','rangeLegend',r,[{key:'trail_range_error_m',label:'range error m'},{key:'mean_abs_closing_mps',label:'abs closure m/s'}],{min:0});const sac=DATA.variant.includes('sac');document.getElementById('optimizerTitle').textContent=sac?'SAC optimizer loss':'PPO optimizer loss';document.getElementById('healthTitle').textContent=sac?'SAC temperature':'PPO trust region';chart('optimizerChart','optimizerLegend',r,sac?[{key:'q_loss',label:'Q loss'},{key:'actor_loss',label:'actor loss'}]:[{key:'loss',label:'total loss'},{key:'value_loss',label:'value loss'},{key:'policy_loss',label:'policy loss'}]);chart('healthChart','healthLegend',r,sac?[{key:'alpha',label:'alpha'}]:[{key:'approx_kl',label:'approx KL'},{key:'clip_fraction',label:'clip fraction'}],{min:0});chart('combatChart','combatLegend',r,[{key:'win_rate',label:'win rate'},{key:'target_damage',label:'target damage'},{key:'own_damage',label:'own damage'},{key:'red_wez_rate',label:'red WEZ'},{key:'own_crash_rate',label:'own crash'}],{min:0});chart('actionChart','actionLegend',r,[{key:'action_abs_mean',label:'abs mean'},{key:'action_std',label:'std'},{key:'action_saturation_rate',label:'saturation'},{key:'mean_delta_action',label:'delta action'}],{min:0});renderDiagnosis(r)}
+function render(){const r=selectedRecords();renderCards(r);chart('rewardChart','rewardLegend',r,[{key:'reward_mean',label:'rollout reward'},{key:'tail_reward',label:'tail reward'}]);chart('componentChart','componentLegend',r,[{key:'reward_damage',label:'damage'},{key:'reward_dwell',label:'dwell'},{key:'reward_aim',label:'aim'},{key:'reward_track',label:'track'},{key:'reward_range_progress',label:'range progress'},{key:'penalty_closure_control',label:'closure control penalty'},{key:'penalty_closure_limit',label:'closure limit penalty'},{key:'penalty_action_rate',label:'action-rate penalty'}]);chart('tailChart','tailLegend',r,[{key:'tail_track_score',label:'tail track'},{key:'tail_wez_fraction',label:'tail WEZ fraction'},{key:'tail_ata_deg',label:'tail ATA deg'}],{min:0});chart('trackChart','trackLegend',r,[{key:'track_score',label:'track score'},{key:'closure_violation_rate',label:'closure violation'},{key:'opening_away_step_fraction',label:'opening away'}],{min:0,max:1});chart('geometryChart','geometryLegend',r,[{key:'final_ata_deg',label:'ATA deg'},{key:'final_aa_deg',label:'AA deg'}],{min:0});chart('rangeChart','rangeLegend',r,[{key:'trail_range_error_m',label:'range error m'},{key:'tail_range_error_m',label:'tail range error m'},{key:'mean_abs_closing_mps',label:'abs closure m/s'}],{min:0});const sac=DATA.variant.includes('sac');document.getElementById('optimizerTitle').textContent=sac?'SAC optimizer loss':'PPO optimizer loss';document.getElementById('healthTitle').textContent=sac?'SAC exploration':'PPO trust region';chart('optimizerChart','optimizerLegend',r,sac?[{key:'q_loss',label:'Q loss'},{key:'actor_loss',label:'actor loss'}]:[{key:'loss',label:'total loss'},{key:'value_loss',label:'value loss'},{key:'policy_loss',label:'policy loss'}]);chart('healthChart','healthLegend',r,sac?[{key:'alpha',label:'alpha'},{key:'policy_entropy_proxy',label:'entropy proxy'},{key:'policy_log_std_mean',label:'mean log std'}]:[{key:'approx_kl',label:'approx KL'},{key:'clip_fraction',label:'clip fraction'}]);chart('combatChart','combatLegend',r,[{key:'win_rate',label:'win rate'},{key:'target_damage',label:'target damage'},{key:'own_damage',label:'own damage'},{key:'red_wez_rate',label:'red WEZ'},{key:'own_crash_rate',label:'own crash'}],{min:0});chart('actionChart','actionLegend',r,[{key:'action_saturation_rate',label:'saturation'},{key:'mean_delta_action',label:'mean delta'},{key:'roll_delta_action',label:'roll delta'},{key:'pitch_delta_action',label:'pitch delta'},{key:'rudder_delta_action',label:'rudder delta'},{key:'throttle_delta_action',label:'throttle delta'}],{min:0});renderDiagnosis(r)}
 filter.addEventListener('change',render);renderStages();render();document.getElementById('footer').textContent=`Source records: ${DATA.source_record_count.toLocaleString()} · rendered: ${DATA.rendered_record_count.toLocaleString()} · skipped malformed lines: ${DATA.skipped_lines}`;
 </script></body></html>"""
 

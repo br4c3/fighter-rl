@@ -531,6 +531,7 @@ def _track_reward(
     reward["track_range_progress_scale"] = float(range_progress_scale)
     reward["track_closure_control_penalty"] = float(closure_control_penalty)
     reward["track_opening_penalty"] = 0.020
+    reward["action_rate_penalty"] = 0.002
 
     return reward
 
@@ -564,6 +565,7 @@ def _nose_bridge_reward(*, trail_m=760.0, phi_scale=0.070, inner_soft_m=305.0):
             "aim_range_center_m": trail_m,
             "aim_range_sigma_m": 300.0,
             "track_closure_penalty": 0.070,
+            "action_rate_penalty": 0.002,
         }
     )
 
@@ -589,6 +591,28 @@ def _gun_aim_bridge_reward(*, phi_scale, inner_soft_m, aim_scale):
         }
     )
 
+    return reward
+
+
+def _wez_hold_bridge_reward():
+    """Blend dense nose/track shaping into sustained WEZ feedback."""
+    reward = _gun_aim_bridge_reward(phi_scale=0.095, inner_soft_m=305.0, aim_scale=0.045)
+    reward.update(
+        {
+            "damage_scale": 9.0,
+            "dwell_scale": 0.040,
+            "dwell_cap_steps": 10,
+            "wez_entry_scale": 0.040,
+            "track_scale": 0.040,
+            "track_trail_m": 650.0,
+            "track_x_sigma_m": 280.0,
+            "track_y_sigma_m": 180.0,
+            "track_z_sigma_m": 180.0,
+            "track_range_progress_scale": 0.025,
+            "track_closure_control_penalty": 0.015,
+            "action_rate_penalty": 0.002,
+        }
+    )
     return reward
 
 
@@ -1900,7 +1924,77 @@ def _with_bucket_gun_curriculum():
             },
         ),
         _gun_stage(
-            5,
+            6,
+            "G05_wez_acquire_hold",
+            6.0,
+            [450.0, 820.0],
+            [0.0, 0.8],
+            [0.0, 6.0],
+            _gun_target_mix(("straight", 0.85), ("weak_turn", 0.15)),
+            phi_scale=0.095,
+            inner_soft_m=305.0,
+            own_speed=[268.0, 286.0],
+            target_speed=[266.0, 278.0],
+            target_bank=[0.0, 4.0],
+            altitude_offset=[-3.0, 3.0],
+            own_roll_jitter=0.07,
+            own_pitch_jitter=0.06,
+            easy_fraction=0.60,
+            boundary_fraction=0.04,
+            reward_override=_wez_hold_bridge_reward(),
+            bucket_mix=[
+                _bucket(
+                    "center_wez",
+                    0.60,
+                    distance_m=[540.0, 720.0],
+                    ata_deg=[0.0, 0.35],
+                    aa_tail_deg=[0.0, 4.0],
+                    dv_mps=[-3.0, 6.0],
+                    target_policy="straight",
+                ),
+                _bucket(
+                    "far_acquire",
+                    0.15,
+                    distance_m=[720.0, 860.0],
+                    ata_deg=[0.0, 0.45],
+                    aa_tail_deg=[0.0, 5.0],
+                    dv_mps=[0.0, 8.0],
+                    target_policy="straight",
+                ),
+                _bucket(
+                    "near_recover",
+                    0.10,
+                    distance_m=[360.0, 500.0],
+                    ata_deg=[0.0, 0.40],
+                    aa_tail_deg=[0.0, 5.0],
+                    dv_mps=[-5.0, 3.0],
+                    target_policy="straight",
+                ),
+                _bucket(
+                    "weak_turn_hold",
+                    0.15,
+                    distance_m=[520.0, 760.0],
+                    ata_deg=[0.3, 0.9],
+                    aa_tail_deg=[0.0, 7.0],
+                    loiter_bank_abs_deg=[1.0, 4.0],
+                    target_policy="weak_turn",
+                ),
+            ],
+            advance={
+                "ep_wez_steps_min": 4.0,
+                "bucket_worst_ep_wez_steps_min": 2.0,
+                "target_damage_min": 0.055,
+                "bucket_worst_target_damage_min": 0.012,
+                "tail_wez_fraction_min": 0.06,
+                "tail_ata_deg_max": 12.0,
+                "inner_violation_rate_max": 0.035,
+                "red_wez_rate_max": 0.07,
+                "own_crash_rate_max": 0.02,
+                "init_feasible_rate_min": 0.985,
+            },
+        ),
+        _gun_stage(
+            7,
             "G0_in_wez_hold",
             4.0,
             [550.0, 700.0],
@@ -1959,10 +2053,12 @@ def _with_bucket_gun_curriculum():
                 ),
             ],
             advance={
-                "ep_wez_steps_min": 8.0,
+                "ep_wez_steps_min": 6.0,
                 "bucket_worst_ep_wez_steps_min": 3.0,
                 "target_damage_min": 0.08,
                 "bucket_worst_target_damage_min": 0.02,
+                "tail_wez_fraction_min": 0.08,
+                "tail_ata_deg_max": 10.0,
                 "inner_violation_rate_max": 0.03,
                 "red_wez_rate_max": 0.07,
                 "own_crash_rate_max": 0.02,
@@ -2628,6 +2724,49 @@ def _with_bucket_gun_curriculum():
     ]
 
     close_stages = [_close_range_stage(stage) for stage in stages]
+
+    # Advancement must reflect end-of-episode control, not only a favorable
+    # full-episode average.  These gates prevent a policy that starts well but
+    # develops a late oscillation from being promoted.
+    stability_gates = {
+        "T0_anchor_trail_hold": {
+            "return_min": 4.5,
+            "tail_track_score_min": 0.85,
+            "tail_ata_deg_max": 15.0,
+        },
+        "T1_range_closure_trail": {
+            "return_min": 4.5,
+            "tail_track_score_min": 0.65,
+            "tail_ata_deg_max": 30.0,
+        },
+        "T2_angular_trail": {
+            "return_min": 3.0,
+            "tail_track_score_min": 0.55,
+            "tail_ata_deg_max": 35.0,
+        },
+        "T3_weak_turn_trail": {
+            "return_min": 1.0,
+            "tail_track_score_min": 0.45,
+            "tail_ata_deg_max": 42.0,
+        },
+        "T35_mild_maneuver_trail": {
+            "return_min": -0.5,
+            "tail_track_score_min": 0.35,
+            "tail_ata_deg_max": 40.0,
+        },
+        "T4_maneuver_trail": {
+            "return_min": 0.25,
+            "tail_track_score_min": 0.30,
+            "tail_ata_deg_max": 42.0,
+        },
+        "A0_nose_on_trail_bridge": {
+            "return_min": 3.0,
+            "tail_ata_deg_max": 15.0,
+            "tail_wez_fraction_min": 0.04,
+        },
+    }
+    for stage in close_stages:
+        stage.advance_conditions.update(stability_gates.get(stage.name, {}))
 
     return [_stage_copy(stage, index=i) for i, stage in enumerate(close_stages)]
 

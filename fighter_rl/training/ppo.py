@@ -52,6 +52,41 @@ def average_window(window):
     return out
 
 
+@torch.no_grad()
+def deterministic_curriculum_evaluation(model, stage, profile, cfg, device, *, sac=False):
+    """Run a reproducible, exploration-free promotion check."""
+    cpu_rng = torch.random.get_rng_state()
+    cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    try:
+        torch.manual_seed(int(cfg.seed) + 10_000 + int(stage.index) * 1_009)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(cfg.seed) + 10_000 + int(stage.index) * 1_009)
+        num_envs = max(1, int(getattr(cfg, "eval_num_envs", 256)))
+        env = CompetitionLoiterCurriculumEnv(
+            stage,
+            num_envs=num_envs,
+            device=device,
+            domain_randomization=not cfg.no_domain_randomization,
+            target_maneuver=cfg.target_maneuver,
+            temporal_frames=profile.temporal_frames,
+            include_previous_action=profile.include_previous_action,
+        )
+        obs = env.reset()
+        state = model.initial_state(num_envs, device)
+        while not env.all_inactive():
+            if sac:
+                action, _, next_state = model.sample_step(obs, state, deterministic=True)
+            else:
+                action, next_state = model.deterministic_action(obs, state)
+            obs, _, _, info = env.step(action)
+            state = model.mask_state(model.detach_state(next_state), info["active"].bool())
+        return env.pop_completed_summary() or {}
+    finally:
+        torch.random.set_rng_state(cpu_rng)
+        if cuda_rng is not None:
+            torch.cuda.set_rng_state_all(cuda_rng)
+
+
 def format_gate(
     stage,
     rolling,
@@ -188,10 +223,15 @@ def action_diagnostics(actions, valid):
     adjacent_valid = valid[1:] & valid[:-1]
 
     if bool(adjacent_valid.any()):
-        delta = (actions[1:] - actions[:-1]).abs().mean(-1)
+        delta_by_axis = (actions[1:] - actions[:-1]).abs()
+        delta = delta_by_axis.mean(-1)
         metrics["mean_delta_action"] = float(delta[adjacent_valid].mean())
+        for axis, name in enumerate(("roll", "pitch", "rudder", "throttle")):
+            metrics[f"{name}_delta_action"] = float(delta_by_axis[..., axis][adjacent_valid].mean())
     else:
         metrics["mean_delta_action"] = 0.0
+        for name in ("roll", "pitch", "rudder", "throttle"):
+            metrics[f"{name}_delta_action"] = 0.0
     return metrics
 
 
@@ -727,6 +767,14 @@ def main():
                     pass_streak = pass_streak + 1 if ok else 0
 
                     if ok and pass_streak >= max(1, cfg.advance_patience):
+                        eval_metrics = deterministic_curriculum_evaluation(
+                            model, stage, profile, cfg, device
+                        )
+                        eval_ok, eval_reason = advancement_satisfied(stage, eval_metrics)
+                        if not eval_ok:
+                            pass_streak = 0
+                            print(f"[eval-block] stage={stage_index} {eval_reason}", flush=True)
+                            continue
                         advanced = True
                         save_checkpoint(
                             stage_dir / "final_checkpoint.pt",
@@ -744,8 +792,9 @@ def main():
                                 "name": stage.name,
                                 "update": update,
                                 "status": "advanced",
-                                "reason": reason,
+                                "reason": f"train:{reason}; eval:{eval_reason}",
                                 "metrics": rolling,
+                                "evaluation_metrics": eval_metrics,
                             }
                         )
                         (run / "curriculum_state.json").write_text(
@@ -917,6 +966,14 @@ def main():
                     if pass_streak < max(1, cfg.advance_patience):
                         continue
 
+                    eval_metrics = deterministic_curriculum_evaluation(
+                        model, stage, profile, cfg, device
+                    )
+                    eval_ok, eval_reason = advancement_satisfied(stage, eval_metrics)
+                    if not eval_ok:
+                        pass_streak = 0
+                        print(f"[eval-block] stage={stage_index} {eval_reason}", flush=True)
+                        continue
                     advanced = True
                     save_checkpoint(
                         stage_dir / "final_checkpoint.pt",
@@ -934,8 +991,9 @@ def main():
                             "name": stage.name,
                             "update": update,
                             "status": "advanced",
-                            "reason": reason,
+                            "reason": f"train:{reason}; eval:{eval_reason}",
                             "metrics": rolling,
+                            "evaluation_metrics": eval_metrics,
                         }
                     )
                     (run / "curriculum_state.json").write_text(
