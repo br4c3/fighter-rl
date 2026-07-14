@@ -38,6 +38,7 @@ configs/*.json
 | `fighter_rl/training/launcher.py` | 노트북 launcher 공통 로직. config 경로, device, CUDA 확인을 담당한다. |
 | `configs/ppo_lstm.json` | PPO LSTM 기본 설정. |
 | `configs/sac_lstm.json` | SAC LSTM 기본 설정. |
+| `configs/sac_lstm_micro.json` | 29-stage micro gun curriculum과 이름 기반 block reset 설정. |
 | `fighter_rl/utils/config.py` | JSON config를 읽어 학습 설정 객체를 만든다. |
 
 ## 학습 본체

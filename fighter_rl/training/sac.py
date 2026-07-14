@@ -117,6 +117,13 @@ def reset_learned_parameters(module):
     module.apply(reset)
 
 
+def stage_selected(stage, stage_index, *, indices=(), names=()):
+    """Select a stage by stable name while retaining legacy index support."""
+    return int(stage_index) in {int(value) for value in indices} or stage.name in {
+        str(value) for value in names
+    }
+
+
 def save_checkpoint(
     path,
     *,
@@ -315,6 +322,9 @@ def main():
     cfg = load_training_config("configs/sac_lstm.json")
     cfg.reset_critic_stages = list(getattr(cfg, "reset_critic_stages", []))
     cfg.reset_alpha_stages = list(getattr(cfg, "reset_alpha_stages", []))
+    cfg.reset_replay_stage_names = list(getattr(cfg, "reset_replay_stage_names", []))
+    cfg.reset_critic_stage_names = list(getattr(cfg, "reset_critic_stage_names", []))
+    cfg.reset_alpha_stage_names = list(getattr(cfg, "reset_alpha_stage_names", []))
     cfg.stage_alpha = float(getattr(cfg, "stage_alpha", 0.20))
     cfg.alpha_min = float(getattr(cfg, "alpha_min", 0.05))
     cfg.critic_warmup_updates_on_reset = int(getattr(cfg, "critic_warmup_updates_on_reset", 0))
@@ -398,11 +408,28 @@ def main():
             and resume_stage_name != stage.name
         )
 
-        if cfg.reset_replay_on_stage and stage_index != start_stage:
+        reset_replay = stage_index != start_stage and (
+            cfg.reset_replay_on_stage
+            or stage_selected(stage, stage_index, names=cfg.reset_replay_stage_names)
+        )
+        if reset_replay:
             replay = SequenceReplay(cfg.replay_chunks, seq_len=cfg.horizon)
 
-        reset_critic = reward_regime_changed and stage_index in set(cfg.reset_critic_stages)
-        reset_alpha = reward_regime_changed and stage_index in set(cfg.reset_alpha_stages)
+        reset_critic = reward_regime_changed and stage_selected(
+            stage,
+            stage_index,
+            indices=cfg.reset_critic_stages,
+            names=cfg.reset_critic_stage_names,
+        )
+        reset_alpha = reward_regime_changed and stage_selected(
+            stage,
+            stage_index,
+            indices=cfg.reset_alpha_stages,
+            names=cfg.reset_alpha_stage_names,
+        )
+
+        if reset_replay:
+            print(f"[stage-reset] stage={stage_index} replay", flush=True)
 
         if reset_critic:
             reset_learned_parameters(q1)

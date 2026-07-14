@@ -641,6 +641,7 @@ class CompetitionLoiterCurriculumEnv:
             name: torch.zeros(self.n, device=self.device)
             for name in (
                 "reward_damage",
+                "reward_wez_hold",
                 "reward_dwell",
                 "reward_wez_entry",
                 "reward_phi",
@@ -1065,6 +1066,11 @@ class CompetitionLoiterCurriculumEnv:
                 - float(cfg.get("own_damage_scale", 18.0))*total_own_damage
             )
             reward += component["reward_damage"]
+
+            component["reward_wez_hold"] = (
+                float(cfg.get("wez_hold_scale", 0.0))*inside.float()
+            )
+            reward += component["reward_wez_hold"]
 
             cap = max(1.0, float(cfg.get("dwell_cap_steps", 20.0)))
             component["reward_dwell"] = (
@@ -1633,6 +1639,7 @@ class CompetitionLoiterCurriculumEnv:
             "tail_range_error_m",
             "tail_wez_fraction",
             "reward_damage",
+            "reward_wez_hold",
             "reward_dwell",
             "reward_wez_entry",
             "reward_phi",
@@ -1645,6 +1652,9 @@ class CompetitionLoiterCurriculumEnv:
         )
         bucket_positive = {metric: [] for metric in positive_metrics}
         bucket_rates = {metric: [] for metric in rate_metrics}
+        bucket_average = {
+            metric: [] for metric in ("tail_track_score", "tail_wez_fraction", "tail_ata_deg")
+        }
 
         for name, metrics in bucket_totals.items():
             bcount = max(1.0, float(metrics.get("episodes", 0.0)))
@@ -1658,7 +1668,10 @@ class CompetitionLoiterCurriculumEnv:
                     bucket_positive[metric].append(value)
             for metric in average_metrics:
                 if metric in metrics:
-                    summary[f"{prefix}_{metric}"] = float(metrics.get(metric, 0.0)) / bcount
+                    value = float(metrics.get(metric, 0.0)) / bcount
+                    summary[f"{prefix}_{metric}"] = value
+                    if metric in bucket_average:
+                        bucket_average[metric].append(value)
             for metric in rate_metrics:
                 if metric in metrics:
                     value = float(metrics.get(metric, 0.0)) / bcount
@@ -1676,6 +1689,14 @@ class CompetitionLoiterCurriculumEnv:
                 )
                 summary[f"bucket_min_{metric}_rate"] = min(values)
                 summary[f"bucket_max_{metric}_rate"] = max(values)
+        for metric, values in bucket_average.items():
+            if values:
+                # ATA is an error (larger is worse); track and WEZ fractions
+                # are scores (smaller is worse).
+                worst = max(values) if metric == "tail_ata_deg" else min(values)
+                summary[f"bucket_worst_{metric}"] = worst
+                summary[f"bucket_min_{metric}"] = min(values)
+                summary[f"bucket_max_{metric}"] = max(values)
         return summary
 
     def all_inactive(self):

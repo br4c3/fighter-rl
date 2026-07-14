@@ -27,6 +27,11 @@ BUCKET_GUN_CURRICULUM_SCHEDULE_NAMES = {
     "axis_bucket",
     "bucketized_gun",
 }
+MICRO_GUN_CURRICULUM_SCHEDULE_NAMES = {
+    "gun_micro_curriculum",
+    "micro_gun",
+    "micro_bucket_gun",
+}
 CONDITIONS = (
     {
         "timeout_rate_min": 0.95,
@@ -435,6 +440,7 @@ def _gun_reward(
         "step_penalty": -0.002,
         "damage_scale": float(damage_scale),
         "own_damage_scale": float(own_damage_scale),
+        "wez_hold_scale": 0.0,
         "dwell_scale": 0.03,
         "wez_entry_scale": 0.08,
         "dwell_cap_steps": 20,
@@ -2771,6 +2777,439 @@ def _with_bucket_gun_curriculum():
     return [_stage_copy(stage, index=i) for i, stage in enumerate(close_stages)]
 
 
+def _micro_block_reward(block):
+    """Reward regimes shared by several adjacent micro-curriculum stages.
+
+    Keeping the reward fixed inside a block lets SAC retain replay while only
+    the reset distribution becomes harder.  Replay is reset at block boundaries.
+    """
+    if block == "aim":
+        reward = _gun_reward(
+            phi_scale=0.050,
+            inner_soft_m=300.0,
+            win_reward=4.0,
+            loss_reward=-9.0,
+            draw_reward=-1.0,
+            damage_scale=8.0,
+            own_damage_scale=14.0,
+            track_scale=0.045,
+            track_trail_m=700.0,
+            track_x_sigma_m=300.0,
+            track_y_sigma_m=190.0,
+            track_z_sigma_m=190.0,
+            track_closure_sigma_mps=35.0,
+            track_closure_limit_mps=65.0,
+            track_overshoot_x_m=-70.0,
+            track_too_close_m=250.0,
+        )
+        reward.update(
+            {
+                "step_penalty": -0.0015,
+                "wez_hold_scale": 0.015,
+                "dwell_scale": 0.035,
+                "dwell_cap_steps": 6,
+                "wez_entry_scale": 0.025,
+                "aim_scale": 0.050,
+                "aim_sigma_deg": 2.0,
+                "aim_range_center_m": 700.0,
+                "aim_range_sigma_m": 360.0,
+                "action_rate_penalty": 0.0015,
+            }
+        )
+        return reward
+
+    if block == "gun":
+        reward = _gun_reward(phi_scale=0.035, inner_soft_m=285.0)
+        reward.update(
+            {
+                "wez_hold_scale": 0.020,
+                "dwell_scale": 0.040,
+                "dwell_cap_steps": 6,
+                "wez_entry_scale": 0.015,
+                "aim_scale": 0.015,
+                "aim_sigma_deg": 1.5,
+                "aim_range_center_m": 650.0,
+                "aim_range_sigma_m": 400.0,
+                "track_scale": 0.010,
+                "track_trail_m": 650.0,
+                "track_x_sigma_m": 300.0,
+                "track_y_sigma_m": 190.0,
+                "track_z_sigma_m": 190.0,
+            }
+        )
+        return reward
+
+    if block == "entry":
+        reward = _gun_reward(phi_scale=0.022, inner_soft_m=265.0)
+        reward.update(
+            {
+                "wez_hold_scale": 0.020,
+                "dwell_scale": 0.040,
+                "dwell_cap_steps": 6,
+                "wez_entry_scale": 0.015,
+                "aim_scale": 0.005,
+                "aim_sigma_deg": 1.5,
+                "track_scale": 0.0,
+            }
+        )
+        return reward
+
+    if block == "bfm":
+        reward = _gun_reward(phi_scale=0.008, inner_soft_m=235.0)
+        reward.update(
+            {
+                "wez_hold_scale": 0.015,
+                "dwell_scale": 0.035,
+                "dwell_cap_steps": 6,
+                "wez_entry_scale": 0.010,
+                "aim_scale": 0.0,
+                "track_scale": 0.0,
+            }
+        )
+        return reward
+
+    raise ValueError(f"Unknown micro reward block: {block!r}")
+
+
+def _micro_advance(**overrides):
+    conditions = {
+        "episodes_min": 30,
+        "own_crash_rate_max": 0.025,
+        "target_crash_rate_max": 0.02,
+        "inner_violation_rate_max": 0.05,
+        "bad_3_9_rate_max": 0.05,
+        "red_wez_rate_max": 0.12,
+        "init_feasible_rate_min": 0.95,
+    }
+    conditions.update(overrides)
+    return _with_numeric_safety_conditions(conditions)
+
+
+def _micro_stage(template, *, name, seconds, reward, buckets, advance):
+    target = copy.deepcopy(template.target_randomization)
+    available = {item.get("name"): item for item in target.get("bucket_mix", [])}
+    missing = sorted(set(buckets) - set(available))
+
+    if missing:
+        raise ValueError(f"Micro stage {name} references missing buckets: {missing}")
+
+    total = sum(float(weight) for weight in buckets.values())
+    target["bucket_mix"] = [
+        {**copy.deepcopy(available[bucket_name]), "weight": float(weight) / total}
+        for bucket_name, weight in buckets.items()
+    ]
+    return _stage_copy(
+        template,
+        index=template.index,
+        name=name,
+        decision_limit=int(round(float(seconds) * 10.0)),
+        max_engage_time=float(seconds),
+        target_randomization=target,
+        reward=reward,
+        advance_conditions=_micro_advance(**advance),
+    )
+
+
+def _with_micro_gun_curriculum():
+    """Fine-grained gun curriculum that changes one difficulty axis at a time."""
+    base = _with_bucket_gun_curriculum()
+    stages = list(base[:6])
+    rewards = {name: _micro_block_reward(name) for name in ("aim", "gun", "entry", "bfm")}
+
+    def add(template_index, name, seconds, block, buckets, **advance):
+        stages.append(
+            _micro_stage(
+                base[template_index],
+                name=name,
+                seconds=seconds,
+                reward=rewards[block],
+                buckets=buckets,
+                advance=advance,
+            )
+        )
+
+    # A: move from trail position control to precise nose-on and sustained WEZ.
+    add(
+        6,
+        "A0_nose_stabilize",
+        6,
+        "aim",
+        {"nose_center": 0.70, "trail_to_gun": 0.30},
+        track_score_min=0.60,
+        tail_track_score_min=0.50,
+        tail_ata_deg_max=10.0,
+    )
+    add(
+        6,
+        "A1_nose_precision",
+        6,
+        "aim",
+        {"nose_center": 0.55, "trail_to_gun": 0.25, "ata_fixup": 0.20},
+        track_score_min=0.55,
+        tail_track_score_min=0.45,
+        tail_ata_deg_max=7.0,
+    )
+    add(
+        7,
+        "A2_wez_touch",
+        6,
+        "aim",
+        {"center_wez": 1.0},
+        ep_wez_steps_min=1.5,
+        target_damage_min=0.025,
+        tail_ata_deg_max=6.0,
+    )
+    add(
+        7,
+        "A3_wez_late_hold",
+        6,
+        "aim",
+        {"center_wez": 0.75, "far_acquire": 0.25},
+        ep_wez_steps_min=2.0,
+        ep_wez_streak_max_min=1.5,
+        tail_wez_fraction_min=0.02,
+        target_damage_min=0.035,
+    )
+    add(
+        7,
+        "A4_wez_streak",
+        6,
+        "aim",
+        {"center_wez": 0.70, "near_recover": 0.30},
+        ep_wez_steps_min=2.5,
+        ep_wez_streak_max_min=2.0,
+        tail_wez_fraction_min=0.04,
+        target_damage_min=0.040,
+    )
+    add(
+        7,
+        "A5_wez_range_edges",
+        6,
+        "aim",
+        {"center_wez": 0.55, "far_acquire": 0.25, "near_recover": 0.20},
+        ep_wez_steps_min=3.0,
+        bucket_worst_ep_wez_steps_min=1.0,
+        bucket_worst_tail_wez_fraction_min=0.01,
+        target_damage_min=0.045,
+    )
+    add(
+        7,
+        "A6_wez_weak_turn",
+        7,
+        "aim",
+        {"center_wez": 0.50, "far_acquire": 0.15, "near_recover": 0.10, "weak_turn_hold": 0.25},
+        ep_wez_steps_min=3.0,
+        bucket_worst_ep_wez_steps_min=0.8,
+        ep_wez_streak_max_min=2.0,
+        tail_wez_fraction_min=0.03,
+        target_damage_min=0.050,
+    )
+
+    # G: strengthen genuine gun feedback, then add one reacquisition axis at a time.
+    add(
+        8,
+        "G0_static_wez_hold",
+        5,
+        "gun",
+        {"perfect_wez": 1.0},
+        ep_wez_steps_min=5.0,
+        ep_wez_streak_max_min=3.0,
+        tail_wez_fraction_min=0.08,
+        target_damage_min=0.070,
+    )
+    add(
+        9,
+        "G1_far_acquire",
+        6,
+        "gun",
+        {"center_wez": 0.70, "far_edge": 0.30},
+        ep_wez_steps_min=4.0,
+        bucket_worst_ep_wez_steps_min=1.5,
+        tail_wez_fraction_min=0.05,
+        target_damage_min=0.075,
+    )
+    add(
+        9,
+        "G2_near_recover",
+        6,
+        "gun",
+        {"center_wez": 0.70, "inner_safe_edge": 0.30},
+        ep_wez_steps_min=4.0,
+        bucket_worst_ep_wez_steps_min=1.5,
+        inner_violation_rate_max=0.035,
+        target_damage_min=0.080,
+    )
+    add(
+        9,
+        "G3_ata_reacquire",
+        7,
+        "gun",
+        {"center_wez": 0.60, "ata_boundary": 0.40},
+        ep_wez_steps_min=3.5,
+        bucket_worst_ep_wez_steps_min=1.0,
+        bucket_worst_tail_ata_deg_max=12.0,
+        target_damage_min=0.080,
+    )
+    add(
+        10,
+        "G4_weak_turn_reacquire",
+        9,
+        "gun",
+        {"already_wez": 0.60, "ata_reacquire": 0.15, "weak_turn": 0.25},
+        ep_wez_steps_min=3.5,
+        bucket_worst_target_damage_min=0.008,
+        target_damage_min=0.090,
+    )
+    add(
+        11,
+        "G5_moving_track",
+        11,
+        "gun",
+        {"straight_wez": 0.50, "weak_turn_center": 0.35, "angle_reacquire": 0.15},
+        ep_wez_steps_min=3.0,
+        bucket_worst_target_damage_min=0.006,
+        target_damage_min=0.100,
+    )
+    add(
+        11,
+        "G6_jink_reacquire",
+        13,
+        "gun",
+        {
+            "straight_wez": 0.35,
+            "weak_turn_center": 0.25,
+            "angle_reacquire": 0.15,
+            "range_reacquire": 0.10,
+            "mild_jink": 0.10,
+            "boundary_combo": 0.05,
+        },
+        target_damage_min=0.110,
+        bucket_worst_target_damage_min=0.004,
+        bad_3_9_rate_max=0.045,
+    )
+
+    # E: expand range and aspect separately before introducing the 3-9 line.
+    add(
+        12,
+        "E0_outer_range",
+        16,
+        "entry",
+        {"easy_rear": 0.65, "range_outer": 0.35},
+        target_damage_min=0.080,
+        init_feasible_rate_min=0.94,
+    )
+    add(
+        12,
+        "E1_outer_ata",
+        18,
+        "entry",
+        {"easy_rear": 0.50, "range_outer": 0.25, "ata_outer": 0.25},
+        target_damage_min=0.070,
+        init_feasible_rate_min=0.93,
+    )
+    add(
+        12,
+        "E2_outer_aspect",
+        18,
+        "entry",
+        {
+            "easy_rear": 0.35,
+            "range_outer": 0.15,
+            "ata_outer": 0.15,
+            "aa_outer": 0.15,
+            "constant_turn": 0.15,
+            "boundary_combo": 0.05,
+        },
+        target_damage_min=0.060,
+        init_feasible_rate_min=0.92,
+    )
+    add(
+        13,
+        "E3_side_rear",
+        22,
+        "entry",
+        {"rear_quarter": 0.50, "outer_range": 0.20, "beam_soft": 0.20, "mild_defensive": 0.10},
+        target_damage_min=0.050,
+        init_feasible_rate_min=0.90,
+        red_wez_rate_max=0.12,
+    )
+    add(
+        14,
+        "E4_three_nine",
+        30,
+        "entry",
+        {
+            "rear_entry": 0.35,
+            "beam_entry": 0.20,
+            "near_3_9": 0.20,
+            "defensive_break": 0.15,
+            "shooter_threat": 0.07,
+            "hard_boundary": 0.03,
+        },
+        target_damage_min=0.035,
+        win_rate_min=0.035,
+        init_feasible_rate_min=0.85,
+        target_crash_without_damage_rate_max=0.02,
+    )
+
+    # B: introduce defensive/BT policies incrementally, retaining easy anchors.
+    add(
+        15,
+        "B0_defensive_intro",
+        38,
+        "bfm",
+        {"known_easy": 0.50, "constant_turn": 0.25, "defensive": 0.25},
+        target_damage_min=0.030,
+        win_rate_min=0.06,
+        init_feasible_rate_min=0.80,
+    )
+    add(
+        15,
+        "B1_bt_easy",
+        45,
+        "bfm",
+        {"known_easy": 0.35, "constant_turn": 0.20, "defensive": 0.20, "bt_easy": 0.25},
+        target_damage_min=0.028,
+        win_rate_min=0.09,
+        init_feasible_rate_min=0.75,
+    )
+    add(
+        16,
+        "B2_bt_mixed",
+        55,
+        "bfm",
+        {
+            "bt_feasible": 0.45,
+            "defensive": 0.20,
+            "constant_turn": 0.15,
+            "jink": 0.10,
+            "shooter": 0.10,
+        },
+        target_damage_min=0.025,
+        win_rate_min=0.13,
+        init_feasible_rate_min=0.68,
+    )
+    add(
+        16,
+        "B3_short_bfm",
+        70,
+        "bfm",
+        {
+            "bt_feasible": 0.35,
+            "defensive": 0.20,
+            "shooter": 0.15,
+            "jink": 0.15,
+            "constant_turn": 0.10,
+            "raw_opening": 0.05,
+        },
+        target_damage_min=0.022,
+        win_rate_min=0.18,
+        init_feasible_rate_min=0.62,
+    )
+
+    return [_stage_copy(stage, index=i) for i, stage in enumerate(stages)]
+
+
 def load_stages(stage_dir=None, schedule=None):
     selected = (
         (
@@ -2788,6 +3227,9 @@ def load_stages(stage_dir=None, schedule=None):
 
     if selected in BUCKET_GUN_CURRICULUM_SCHEDULE_NAMES:
         return _with_bucket_gun_curriculum()
+
+    if selected in MICRO_GUN_CURRICULUM_SCHEDULE_NAMES:
+        return _with_micro_gun_curriculum()
 
     directory = Path(stage_dir) if stage_dir else AIP_STAGE_DIR
 
@@ -2823,7 +3265,8 @@ def load_stages(stage_dir=None, schedule=None):
         return _with_final_kill_bridge(stages)
 
     raise ValueError(
-        f"Unknown loiter stage schedule: {selected!r}. Use 'aip', 'kill_bridge', 'gun_curriculum', or 'gun_bucket_curriculum'."
+        f"Unknown loiter stage schedule: {selected!r}. Use 'aip', 'kill_bridge', "
+        "'gun_curriculum', 'gun_bucket_curriculum', or 'gun_micro_curriculum'."
     )
 
 

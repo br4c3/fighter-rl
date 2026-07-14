@@ -83,6 +83,7 @@ DASHBOARD_FIELDS = {
     "tail_range_error_m",
     "tail_wez_fraction",
     "reward_damage",
+    "reward_wez_hold",
     "reward_dwell",
     "reward_wez_entry",
     "reward_phi",

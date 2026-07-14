@@ -13,6 +13,7 @@ Minimal fast GPU training setup for the AIP dogfight policy.
 - `run_fast_aip_sac_server.ipynb` - SAC Jupyter launcher.
 - `configs/ppo_lstm.json` - PPO training config.
 - `configs/sac_lstm.json` - SAC training config.
+- `configs/sac_lstm_micro.json` - 29-stage fine-grained SAC gun curriculum.
 - `fighter_rl/models/ppo.py` - PPO MLP/LSTM policy profiles.
 - `fighter_rl/models/sac.py` - SAC MLP/LSTM actor/critic profiles.
 - `fighter_rl/envs/loiter.py` - batched gun curriculum environment.
@@ -61,6 +62,10 @@ CUDA_VISIBLE_DEVICES=1 .venv/bin/python -m jupyter lab run_fast_aip_sac_server.i
 ```
 
 To use another config file, change `CONFIG_PATH` in the notebook setup cell.
+
+For the fine-grained gun curriculum, point `CONFIG_PATH` at
+`configs/sac_lstm_micro.json`. It preserves replay within each A/G/E/B block
+and resets replay only when the reward regime changes.
 
 ## Variants
 

@@ -7,6 +7,27 @@
 실제 보상 계산은 `fighter_rl/envs/loiter.py`의
 `CompetitionLoiterCurriculumEnv.step()`에서 수행한다.
 
+## SAC micro curriculum
+
+`configs/sac_lstm_micro.json`은 별도 `gun_micro_curriculum` schedule을 사용한다.
+기존 0-5 trail stage 뒤를 A 7개, G 7개, E 5개, B 4개로 나눠 총 29개
+stage를 구성한다. A/G/E/B block 안에서는 reward를 고정하고 초기 조건 bucket만
+점진적으로 확장한다. replay는 모든 stage가 아니라 `A0`, `G0`, `E0`, `B0`
+block 경계에서만 초기화한다.
+
+| Block | Stage | 한 번에 추가하는 난이도 |
+| --- | --- | --- |
+| Trail | 0-5 | 기존 위치/closure/약한 기동 추적 |
+| A | 6-12 | nose 안정화, WEZ 접촉, tail hold, range edge, weak turn |
+| G | 13-19 | static hold, far/near/ATA reacquire, moving target, jink |
+| E | 20-24 | 거리, ATA, aspect, side-rear, 3-9 line |
+| B | 25-28 | defensive, easy BT, mixed BT, short BFM |
+
+micro curriculum은 `wez_hold_scale`을 추가로 사용한다. 이는 WEZ 안에 있는
+모든 step에 즉시 주는 보상이며, 연속 체류 시간이 길어질수록 커지는
+`dwell_scale`과 분리된다. `wez_entry_scale`은 재진입 반복을 과도하게
+강화하지 않도록 기존 schedule보다 작다.
+
 ## 전체 구조
 
 | 구간 | Stage | 목적 | Reward 성격 |
@@ -29,6 +50,7 @@
 | Damage reward | `damage_scale` | 적에게 준 damage 보상 |
 | Own damage penalty | `own_damage_scale` | 내가 받은 damage 패널티 |
 | WEZ dwell | `dwell_scale` | WEZ 안에 연속으로 머무는 보상 |
+| WEZ hold | `wez_hold_scale` | WEZ 안에 있는 각 step에 즉시 주는 보상 |
 | WEZ entry | `wez_entry_scale` | WEZ에 새로 진입하거나 재진입할 때 주는 보상 |
 | Phi shaping | `phi_scale` | 거리/ATA/AA 기반 gun quality 개선량 보상 |
 | Aim shaping | `aim_scale` | 조준 각도와 목표 거리 근접도 보상 |
